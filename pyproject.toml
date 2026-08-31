@@ -1,0 +1,30 @@
+[project]
+name = "physsplat"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "mohamadmsalman82", email = "mohamad.salman@mail.utoronto.ca" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "h5py>=3.16.0",
+    "hdbscan>=0.8.44",
+    "matplotlib>=3.11.1",
+    "numpy>=2.5.2",
+    "onnx>=1.22.0",
+    "onnxruntime>=1.29.0",
+    "pybullet>=3.2.7",
+    "rerun-sdk>=0.36.3",
+    "scikit-learn>=1.9.0",
+    "scipy>=1.18.1",
+    "torch>=2.13.0",
+    "trimesh>=5.0.0",
+]
+
+[project.scripts]
+physsplat = "physsplat:main"
+
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13.0"]
+build-backend = "uv_build"

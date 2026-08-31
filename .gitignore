@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Generated artifacts (large, reproducible)
+data/*
+!data/.gitkeep
+checkpoints/*
+!checkpoints/.gitkeep
+
+# LaTeX build files
+*.aux
+*.log
+*.out
+*.toc
+
+# Web (Phase 7)
+web/node_modules/
+web/.next/
+
+# macOS
+.DS_Store
