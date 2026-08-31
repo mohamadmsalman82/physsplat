@@ -1,0 +1,401 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb, amsfonts}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage[colorlinks=true, linkcolor=blue!60!black, urlcolor=blue!60!black, citecolor=blue!60!black]{hyperref}
+\usepackage{parskip}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  framesep=4pt,
+  backgroundcolor=\color{gray!8},
+  showstringspaces=false
+}
+
+\newcommand{\x}{\mathbf{x}}
+\newcommand{\vv}{\mathbf{v}}
+\newcommand{\g}{\mathbf{g}}
+\newcommand{\R}{\mathbf{R}}
+\newcommand{\tr}{\mathbf{t}}
+
+\title{\textbf{PhysSplat: A Physically Grounded 3D Neural World Model \\ for Interactive Environments}\\[6pt]
+\large Technical Design Document}
+\author{Mohamad Salman}
+\date{August 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+PhysSplat converts a photograph of everyday rigid objects on a flat surface (blocks, pencils, erasers, and similar simple items) into an interactive, physically plausible 3D simulation that runs in a web browser. The pipeline lifts the image into a 3D Gaussian Splat representation, decomposes the splat cloud into discrete rigid bodies without supervision, and simulates those bodies with a learned graph-network dynamics model trained entirely on synthetic data. The user can orbit the scene, poke and shove objects with the mouse, and watch them topple, slide, and roll, with every frame rendered from the same Gaussians that were reconstructed from the photo. This document specifies the full architecture, the mathematics of the learned simulator, the synthetic data pipeline, and a step-by-step build plan starting from an empty repository on an Apple M4 Pro with a compute budget under \$30.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%=====================================================================
+\section{What the Project Is and What It Demonstrates}
+%=====================================================================
+
+\subsection{The one-sentence version}
+Take a photo of a few simple objects on a table (blocks, pencils, erasers), get back a browser window where those exact objects exist in 3D and obey physics you can interact with, where the physics is a neural network rather than a hand-coded solver. The scope is deliberately bounded to \emph{convex-ish rigid objects on a flat surface}: things that stack, slide, tip, and roll. Concave or articulated objects (mugs, scissors) are out of scope.
+
+\subsection{Why this is interesting}
+Two mature technologies exist on either side of this project, and neither crosses the gap alone:
+
+\begin{itemize}[itemsep=2pt]
+  \item \textbf{Generative 3D reconstruction} (3D Gaussian Splatting, feed-forward image-to-3D models) produces photorealistic 3D scenes from images, but the output is a hollow visual shell. Nothing has mass, nothing collides, gravity does not exist.
+  \item \textbf{Physics engines} (MuJoCo, PyBullet, Rapier) simulate rigid bodies robustly, but they require clean meshes, convex decompositions, and hand-tuned parameters. They cannot ingest a photograph.
+\end{itemize}
+
+PhysSplat bridges the two with a \emph{learned} dynamics model: a graph neural network trained on synthetic trajectories that predicts how bodies move under gravity, contact, friction, and user-applied impulses. No meshing, convex decomposition, or manual parameter tuning is needed at inference time.
+
+\subsection{The world model formulation}
+The system learns an implicit transition function
+\begin{equation}
+  s_{t+1} = f_\theta(s_t, a_t),
+\end{equation}
+where the state $s_t$ is a set of particles with positions, velocities, and body assignments; the action $a_t$ is an external impulse injected by the user at a 3D location; and $f_\theta$ is a graph neural network that models contact through message passing rather than analytic collision resolution. This is the defining property of a world model: the dynamics are learned from data, not programmed.
+
+\subsection{What it demonstrates to a technical reviewer}
+\begin{itemize}[itemsep=2pt]
+  \item \textbf{Spatial intelligence:} lifting unstructured 2D pixels into a structured, object-decomposed 3D representation.
+  \item \textbf{Geometric deep learning:} a graph network simulator with relational inductive biases, rigid-body structure, noise-robust multi-step rollout, and correct input/output normalization.
+  \item \textbf{ML systems engineering:} synthetic data generation at scale, training on Apple Silicon via Metal Performance Shaders, ONNX export, and client-side neural network inference in the browser at interactive rates.
+  \item \textbf{Full-stack execution:} a deployed Next.js application with a real-time WebGL Gaussian renderer.
+\end{itemize}
+
+%=====================================================================
+\section{System Architecture}
+\label{sec:architecture}
+%=====================================================================
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Stage} & \textbf{Runs} & \textbf{Frequency} \\
+\midrule
+A. Image $\rightarrow$ 3D Gaussians & Server / local Mac & once per scene \\
+B. Decomposition into rigid bodies & Server / local Mac & once per scene \\
+C. Physics particle resampling \& canonicalization & Server / local Mac & once per scene \\
+D. Learned dynamics rollout (GNN) & \textbf{Browser (ONNX Runtime Web)} & 60\,Hz \\
+E. Gaussian rendering \& interaction & Browser (WebGL/WebGPU) & 60\,Hz \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Data flow: a photo is uploaded; Stage A produces a splat file; Stage B labels every Gaussian with a body id and extracts the ground plane; Stage C samples physics particles per body and normalizes the scene (gravity-aligned, metric-scaled); the browser receives one packet containing the labeled Gaussians, the physics particles, and body metadata, and from then on everything runs client-side: the GNN steps the particles, rigid transforms are recovered per body, the Gaussians are moved, sorted, and splatted.
+
+Two design decisions shape everything downstream:
+
+\textbf{Two coupled representations.} The physics does not run on the raw Gaussians. A reconstruction produces tens of thousands of nonuniformly dense Gaussians, which is too slow for a radius-graph GNN and statistically unlike any training data. Instead, each body gets a small set of uniformly resampled \emph{physics particles} (Section~\ref{sec:stageC}) that the GNN simulates, and the full Gaussian set is carried along rigidly: each frame, body $b$'s transform $(\R_b, \tr_b)$ is applied to its Gaussians as $\boldsymbol{\mu}' = \R_b \boldsymbol{\mu} + \tr_b$ and $\boldsymbol{\Sigma}' = \R_b \boldsymbol{\Sigma} \R_b^\top$.
+
+\textbf{Client-side inference.} Round-tripping physics steps through a server adds 50 to 300\,ms of latency per step and destroys interactivity. The dynamics network is small (about 5M parameters over about 1{,}000 particles), so it runs in the browser via ONNX Runtime Web at a few milliseconds per step. The server's only job is the one-time reconstruction, which is latency-tolerant.
+
+Training happens entirely offline (Section~\ref{sec:training}) on synthetic PyBullet scenes that mimic Stage C's output format, which is what makes the sim-to-recon transfer work.
+
+%=====================================================================
+\section{The Pipeline, Stage by Stage}
+%=====================================================================
+
+\subsection{Stage A: Image to 3D Gaussians}
+\label{sec:stageA}
+
+\textbf{Primary path (single image).} A feed-forward image-to-3D model runs once per scene:
+\begin{itemize}[itemsep=2pt]
+  \item \textbf{LGM}~\cite{lgm}: generates multi-view images with a diffusion model, then regresses Gaussians directly. Native Gaussian output. Heavier, and the multi-view diffusion step is the flakiest part on MPS; if MPS misbehaves, run this one stage on a rented GPU or free Colab, since it is offline and one-shot.
+  \item \textbf{TripoSR}~\cite{triposr}: faster and more robust, but outputs a triplane field, so we extract a mesh (marching cubes), sample its surface, and instantiate one small isotropic Gaussian per sample with the surface color. Slightly ``point-cloudy'' visuals but serviceable.
+\end{itemize}
+Both are trained on single centered objects. A compact tabletop arrangement of a few small objects against a plain background reads as one object, which these models handle acceptably; the occluded back is hallucinated, but simple convex shapes make this rarely noticeable. Background removal (\texttt{rembg}) is applied before reconstruction. One caution: very thin structures (a lone pencil) are the weakest case for feed-forward reconstructors and may come back lumpy; the physics tolerates this (the convex hull of a lumpy pencil is still pencil-shaped), but for hero shots prefer chunkier objects or the multi-view path.
+
+\textbf{Fallback path (multi-view).} 30 to 60 phone photos orbiting the scene, processed by a standard 3DGS pipeline~\cite{3dgs}, yield a far higher-fidelity splat scene including a real ground plane. The downstream pipeline is identical.
+
+\textbf{Output:} a \texttt{.ply} of $N$ Gaussians, each with position $\boldsymbol{\mu}_i \in \mathbb{R}^3$, covariance (stored as scale and quaternion), opacity, and spherical-harmonic color coefficients.
+
+\subsection{Stage B: Unsupervised decomposition into bodies}
+\label{sec:stageB}
+
+\begin{enumerate}[itemsep=2pt]
+  \item \textbf{Gravity alignment and scaling.} Align the dominant plane normal to $+z$ and rescale so object sizes are plausible in metric units (the object class is known, so metric scale is assumed rather than estimated).
+  \item \textbf{Ground extraction.} RANSAC plane fit on the lowest 30\% of points (by $z$). Inliers are labeled \emph{static ground}. If the single-image path reconstructs no ground, a synthetic plane is added at the scene's minimum $z$.
+  \item \textbf{Clustering.} HDBSCAN over $[\,\boldsymbol{\mu}_i / \sigma_{xyz},\; \lambda\,\mathbf{c}_i\,]$, normalized position concatenated with weighted RGB from the DC spherical-harmonic term. Position separates spatially distinct objects; color separates touching objects of different colors. Clusters below a minimum size are merged or discarded as floaters.
+  \item \textbf{Per-body statistics.} Centroid, principal axes (PCA), an oriented bounding box (used for mouse-ray picking), and mass plus inertia estimated from the cluster's convex hull with an assumed density.
+\end{enumerate}
+
+\textbf{Output:} a body id per Gaussian, a ground label, and per-body metadata.
+
+\subsection{Stage C: Physics particle resampling and canonicalization}
+\label{sec:stageC}
+
+This stage makes real reconstructions statistically indistinguishable from training data, which is the entire trick behind sim-to-real transfer here.
+
+For each body, sample surface points by farthest-point sampling at a \emph{fixed target spacing} of $\sim$4\,mm (capped at $P_{\max} \approx 400$ per body), rather than a fixed count. Fixed spacing keeps neighborhood statistics consistent across object sizes: a pencil and a large block have the same local particle density even though their counts differ, so the contact radius stays a single global constant. The sampler must be \emph{byte-for-byte the same procedure} used when generating training data. Each particle stores its offset from the body centroid in the body frame, which is what lets us recover the body's rigid transform. Ground is handled analytically as a node feature rather than with ground particles.
+
+\textbf{Output:} particle positions $\x_i$, body ids $b_i$, body-frame offsets $\mathbf{r}_i$, per-body mass and inertia, and zero initial velocities.
+
+%=====================================================================
+\section{The Learned Dynamics Engine}
+\label{sec:dynamics}
+%=====================================================================
+
+The core of the project: an Encode--Process--Decode graph network in the GNS family~\cite{gns}, with a rigid-body output head. Classic GNS predicts an independent acceleration per particle, which works for sand and water but fails for rigid bodies: accumulated per-particle error violates rigidity within tens of steps and objects visibly melt. PhysSplat therefore keeps the particle-level contact graph but constrains the output to rigid motion, following the per-body approach of FIGNet~\cite{fignet}.
+
+\subsection{Graph construction (every step)}
+Nodes are the physics particles. Edges connect pairs within a contact radius:
+\begin{equation}
+\mathcal{E}_t = \{(i,j) : \lVert \x_i - \x_j \rVert < r_{\text{contact}},\; i \neq j\},
+\end{equation}
+with $r_{\text{contact}}$ about 1.5$\times$ the particle spacing. Same-body edges propagate information across a body; cross-body edges carry contact, and an edge feature flags which kind each edge is. Neighbor search uses a uniform grid hash, $O(N)$ per step.
+
+\subsection{Input features and normalization}
+Per-node input:
+\begin{equation}
+\mathbf{h}_i^{(0)} = \big[\; \vv_i^{t-C+1}, \ldots, \vv_i^{t} \;\big\|\; d_i^{\text{ground}} \;\big\|\; m_{b_i} \;\big\|\; \operatorname{diag}(\mathbf{I}_{b_i}) \;\big\|\; \mathbf{a}_i^{\text{ext}} \;\big],
+\end{equation}
+a history of $C=5$ finite-difference velocities, a clipped distance to the ground plane $d_i^{\text{ground}} = \min(z_i, r_{\text{contact}})$ (how the network senses the floor without floor particles), the body mass, the diagonal of the body's inertia tensor in its principal frame (a pencil and a cube respond very differently to the same push; the network could infer this from geometry, but providing it is cheap and helps), and the external impulse feature $\mathbf{a}_i^{\text{ext}}$ (zero except during user interaction, Section~\ref{sec:interaction}). Absolute positions are never input, giving translation invariance for free.
+
+Per-edge input for $(i,j)$: relative displacement $\x_j - \x_i$, its norm, and the same-body flag.
+
+Every input and target dimension is standardized by dataset statistics. In GNS-class models this is not a nicety; it is the difference between converging and not, because raw accelerations are dominated by gravity while contact spikes are orders of magnitude rarer.
+
+\subsection{Encoder, processor, decoder}
+\textbf{Encoder:} two-layer MLPs lift node and edge features to $d=128$-dimensional latents.
+
+\textbf{Processor:} $L=10$ message-passing blocks with residual connections:
+\begin{align}
+\mathbf{e}_{ij}^{(\ell+1)} &= \mathbf{e}_{ij}^{(\ell)} + \phi_e\!\big(\mathbf{e}_{ij}^{(\ell)}, \mathbf{h}_i^{(\ell)}, \mathbf{h}_j^{(\ell)}\big), \\
+\mathbf{h}_i^{(\ell+1)} &= \mathbf{h}_i^{(\ell)} + \phi_v\!\Big(\mathbf{h}_i^{(\ell)}, \textstyle\sum_{j \in \mathcal{N}(i)} \mathbf{e}_{ij}^{(\ell+1)}\Big),
+\end{align}
+where $\phi_e, \phi_v$ are two-layer MLPs with LayerNorm. Ten hops let a contact on one corner of a body influence the opposite corner within a single step. Implementation is plain PyTorch (edge MLPs on gathered node pairs, aggregation via \texttt{index\_add\_}); PyTorch Geometric is deliberately avoided because its scatter kernels have poor MPS coverage and complicate ONNX export.
+
+\textbf{Decoder (per-body rigid head):} mean-pool final node latents within each body $b$ and decode
+\begin{equation}
+(\Delta \vv_b,\; \Delta \boldsymbol{\omega}_b) = \psi\Big( \tfrac{1}{|b|} \textstyle\sum_{i \in b} \mathbf{h}_i^{(L)} \Big) \in \mathbb{R}^6,
+\end{equation}
+a linear and angular acceleration at the body's center of mass. Because every particle of a body moves under one SE(3) update, rigidity is exact by construction and rollouts cannot melt.
+
+\subsection{Integration}
+Semi-implicit Euler per body, with gravity added analytically so the network only learns the \emph{residual} dynamics (contact and friction), an easier function:
+\begin{align}
+\vv_b^{t+1} &= \vv_b^{t} + \g\,\Delta t + \Delta \vv_b, &
+\boldsymbol{\omega}_b^{t+1} &= \boldsymbol{\omega}_b^{t} + \Delta \boldsymbol{\omega}_b, \\
+\tr_b^{t+1} &= \tr_b^{t} + \vv_b^{t+1} \Delta t, &
+\R_b^{t+1} &= \exp\!\big([\boldsymbol{\omega}_b^{t+1}]_\times \Delta t\big)\, \R_b^{t},
+\end{align}
+and particle positions follow: $\x_i^{t+1} = \R_b^{t+1} \mathbf{r}_i + \tr_b^{t+1}$.
+
+\subsection{The shape-matching fallback}
+If the per-body head underfits (pooling discards where on the body contact happened), a fallback decoder predicts per-particle accelerations as in classic GNS, integrates particles freely, then snaps each body back to rigidity via the Kabsch projection: with predicted positions $\tilde{\x}_i$ and offsets $\mathbf{r}_i$,
+\begin{equation}
+\R_b^\ast = \arg\max_{\R \in SO(3)} \operatorname{tr}\!\big(\R^\top \mathbf{A}_b\big), \qquad
+\mathbf{A}_b = \sum_{i \in b} (\tilde{\x}_i - \bar{\x}_b)\, \mathbf{r}_i^\top,
+\end{equation}
+solved by SVD of $\mathbf{A}_b$, with $\tr_b^\ast = \bar{\x}_b$. Both heads share the same encoder and processor, so switching is a one-line config change.
+
+\subsection{Loss and rollout stability}
+\label{sec:loss}
+Training minimizes single-step MSE on normalized accelerations. Single-step training alone drifts over long rollouts because the model never sees its own errors; two standard remedies are used:
+\begin{itemize}[itemsep=2pt]
+  \item \textbf{Training-noise injection:} corrupt input positions and velocities with random-walk Gaussian noise ($\sigma \approx$ 1 to 3\,mm over the history window) while computing targets against the clean next state. The model learns to \emph{correct} perturbations, exactly the skill rollout requires. This is the highest-leverage trick in the GNS literature.
+  \item \textbf{Short fine-tuning rollouts:} after single-step convergence, fine-tune on 4 to 8-step unrolled losses at a small learning rate.
+\end{itemize}
+
+%=====================================================================
+\section{Browser Runtime, Rendering, and Interaction}
+\label{sec:stageE}
+%=====================================================================
+
+\subsection{Client-side inference}
+The trained model is exported to ONNX with symbolic shapes for dynamic node and edge counts. Scatter aggregation exports to ONNX \texttt{ScatterND}/\texttt{ScatterElements}; the SVD in the fallback head does not export, so if that head ships, the Kabsch projection is implemented once in TypeScript (30 lines on $3\times3$ matrices). Graph construction (grid-hash neighbor search) also lives in TypeScript and rebuilds the edge list each step. Runtime: ONNX Runtime Web with the WebGPU execution provider where available, WASM-SIMD otherwise. At $\sim$1{,}000 nodes and 5M parameters, a step costs single-digit milliseconds; physics runs at 60\,Hz, or 30\,Hz with interpolation.
+
+\subsection{Rendering moving Gaussians}
+A Three.js / React Three Fiber scene using an existing 3DGS splatting library (GaussianSplats3D or Spark). Each body's Gaussians form their own splat batch with a per-batch model matrix, so the CPU uploads 6 floats per body per frame rather than rewriting buffers; covariances rotate by conjugation with $\R_b$ (in practice, rotate the stored quaternion). View-dependent depth sorting is retriggered when bodies move, which the mature libraries handle.
+
+\subsection{Interaction}
+\label{sec:interaction}
+Mouse down casts a ray tested against per-body OBBs from Stage B. A hit turns the drag vector into an impulse: direction in the camera plane, magnitude from drag length, capped to the training distribution's maximum. The impulse enters the next $K\approx3$ physics steps as $\mathbf{a}_i^{\text{ext}}$ on the hit body's particles, weighted by Gaussian falloff from the hit point, so poking a corner produces spin. Sliders for gravity scale and impulse strength, and a reset button (free, since the initial state is just the Stage C packet).
+
+%=====================================================================
+\section{Synthetic Training Data}
+\label{sec:data}
+%=====================================================================
+
+All training data is generated locally with PyBullet on CPU, deterministic seeds. Nothing is downloaded or labeled.
+
+\subsection{Scene distribution}
+Each trajectory:
+\begin{itemize}[itemsep=2pt]
+  \item 2 to 6 objects drawn from a randomized \emph{primitive-shape family}: boxes (erasers, blocks), cylinders and capsules (pencils, markers, batteries), and random convex polyhedra. Longest dimension 2 to 16\,cm, aspect ratios up to 15:1 to cover pencil-like shapes; friction $\mu \in [0.3, 0.9]$; restitution $\in [0.0, 0.4]$; density fixed. Convexity is the scope boundary: any real object is simulated as its convex hull, which is accurate for the target class.
+  \item Initial conditions mixed across three regimes: (a) stable-ish stacks (settled 100 steps before recording), (b) objects lying scattered flat on the surface, the common case for pencils and erasers, and (c) random drops from low height. Cylinders must appear often enough at rest and mid-roll that the model learns both rolling and coming to rest, the hardest low-energy behavior in this domain.
+  \item At 1 to 3 random times, an impulse of random magnitude and direction applied at a random surface point of a random object, recorded as the action channel. This teaches the response to user pokes.
+  \item 300 steps recorded at $\Delta t = 1/60$\,s (simulated at 240\,Hz internally, subsampled), storing per-body poses and twists.
+\end{itemize}
+Target: 5{,}000 trajectories $\rightarrow$ $\sim$1.5M transitions, an hour or two on the M4 Pro's CPU cores with multiprocessing.
+
+\subsection{Particle-ization}
+For every trajectory, particles are sampled once on each object's surface mesh with the exact Stage C sampler (farthest-point at fixed spacing), stored as body-frame offsets; world positions at every step derive from the recorded poses. Storing poses plus offsets instead of raw point clouds keeps the dataset in the tens of MB and guarantees rigid-consistent ground truth.
+
+\subsection{Domain randomization for the reconstruction gap}
+Reconstructed objects are not perfect primitives. At training time: perturb particle positions with 0.5 to 2\,mm surface noise, randomly delete 5 to 15\% of particles, and jitter per-body counts, so a lumpy reconstructed cluster still looks in-distribution.
+
+%=====================================================================
+\section{Training and Evaluation}
+\label{sec:training}
+%=====================================================================
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Latent width / MP layers & 128 / 10 \\
+Parameters & $\approx$ 5M \\
+Optimizer & AdamW, lr $10^{-4} \rightarrow 10^{-6}$ (exponential decay) \\
+Batch & 2 to 4 scenes' worth of graphs per step \\
+Steps & 300k to 500k single-step, then 20k rollout fine-tune \\
+Precision & float32 (MPS has no float64) \\
+Hardware & M4 Pro MPS; optionally one A100 day ($<\$30$) for the final run \\
+Wall clock & 1 to 3 days on MPS \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Practical notes: run with \texttt{PYTORCH\_ENABLE\_MPS\_FALLBACK=1}; build graphs in dataloader workers, not the training loop; log validation \emph{rollout} error every few thousand steps, since single-step loss is a poor proxy for what matters.
+
+\subsection{Evaluation metrics}
+\begin{itemize}[itemsep=2pt]
+  \item \textbf{Rollout error:} mean per-body translation and rotation error vs.\ ground truth at 50, 150, 300 steps.
+  \item \textbf{Penetration depth:} mean and max interpenetration between bodies and with the ground; the learned model has no hard constraints, so this quantifies how well contact was learned.
+  \item \textbf{Stability:} fraction of initially stable scenes that remain at rest after 300 unperturbed steps. A model that knocks over stable stacks by itself is not ready.
+  \item \textbf{Energy sanity:} total energy must not grow over a passive rollout.
+  \item \textbf{Qualitative:} side-by-side videos, learned vs.\ PyBullet, same seed and same pokes.
+\end{itemize}
+
+%=====================================================================
+\section{Step-by-Step Build Plan from Zero}
+\label{sec:roadmap}
+%=====================================================================
+
+Milestones are ordered so that every one ends with something visible and the riskiest work (the learned simulator) happens first; the reconstruction front end, which is mostly running pretrained checkpoints, comes after. Time estimates assume part-time work.
+
+\subsection{Milestone 0: environment and skeleton (half a day)}
+\begin{lstlisting}
+uv init physsplat && cd physsplat
+uv add torch numpy scipy pybullet h5py rerun-sdk hdbscan trimesh onnx onnxruntime
+python -c "import torch; print(torch.backends.mps.is_available())"
+\end{lstlisting}
+\begin{lstlisting}
+physsplat/
+  datagen/     # PyBullet scene generation, particle sampling
+  model/       # GNN, integrators, losses (plain PyTorch)
+  train/       # loops, config, checkpoints
+  recon/       # image -> splats -> bodies -> particles
+  export/      # ONNX export + parity tests
+  web/         # Next.js app (Milestone 5)
+  scripts/     # entry points
+\end{lstlisting}
+Install the Rerun viewer early: logging 3D particle states to Rerun is the fastest way to inspect everything this project produces without writing viewer code.
+
+\subsection{Milestone 1: synthetic data you can watch (week 1)}
+\begin{enumerate}[itemsep=2pt]
+  \item \texttt{datagen/scenes.py}: random scene generator over the primitive-shape family (start with boxes only, add cylinders and convex hulls once the loop works), settle, record poses at 60\,Hz, apply logged impulses. Verify visually in PyBullet's GUI before scaling.
+  \item \texttt{datagen/particles.py}: farthest-point fixed-spacing surface sampler over an arbitrary mesh (trimesh handles primitives and hulls uniformly), body-frame offsets. Reused verbatim in Stage C; keep it shared.
+  \item HDF5 writer (poses, offsets, actions, material parameters) and a loader that reconstitutes world-space particles.
+  \item Generate 50 trajectories, log a few to Rerun, and check: no interpenetration in ground truth, impulses visibly kick objects, scenes settle.
+  \item Scale to 5{,}000 trajectories across the full shape family. Compute and store normalization statistics.
+\end{enumerate}
+\textbf{Deliverable:} a Rerun recording of ground-truth physics from your own generator.
+
+\subsection{Milestone 2: the learned simulator (weeks 2--3, the crux)}
+\begin{enumerate}[itemsep=2pt]
+  \item Graph builder (grid-hash radius search), unit-tested against brute-force $O(N^2)$.
+  \item Encode--Process--Decode with both heads (per-body, and per-particle plus Kabsch). Plain PyTorch.
+  \item Overfit a single trajectory to near-zero loss. If this fails, the bug is in features, normalization, or indexing, and no amount of data will save it.
+  \item Train on the full set with noise injection. Targets in order: a dropped box lands and stops; a two-box stack stays up; a poked stack topples plausibly; a flicked pencil rolls and comes to rest.
+  \item Rollout evaluation harness (metrics of Section~\ref{sec:training}) and side-by-side videos.
+  \item Rollout fine-tuning pass.
+\end{enumerate}
+\textbf{Deliverable:} video, learned vs.\ PyBullet, same poke, visually matching for 5 seconds. Once this exists the project cannot fail completely; everything after is integration.
+
+\subsection{Milestone 3: interactive local demo, synthetic scenes (week 4)}
+A minimal Three.js page (objects as plain meshes, no splats yet) connected over WebSocket to a Python process running the model on MPS. Click to poke. This validates the interaction loop, the impulse feature, and reset, with none of the web-inference complexity.
+\textbf{Deliverable:} you can knock over a synthetic stack with your mouse, locally.
+
+\subsection{Milestone 4: the reconstruction front end (week 5)}
+\begin{enumerate}[itemsep=2pt]
+  \item Photograph 3 to 5 distinctly colored objects (blocks and erasers first; add pencils once boxes work), plain background, good light. Run \texttt{rembg}, then TripoSR (easier), LGM if quality disappoints. Export Gaussians or points as \texttt{.ply}.
+  \item Stage B: gravity align, RANSAC ground, HDBSCAN with position+color features, per-body OBB, mass, inertia. Tune $\lambda$ and \texttt{min\_cluster\_size} on your test scene. Log colored-by-body clouds to Rerun.
+  \item Stage C with the shared sampler from Milestone 1. Verify in Rerun that reconstructed-scene particles look like training particles.
+  \item Feed the result to the Milestone 3 demo. Expect one iteration round (scale and gravity mismatches are the usual suspects; domain randomization is the usual fix).
+\end{enumerate}
+\textbf{Deliverable:} photo in, interactive (mesh-rendered) physics out, locally.
+
+\subsection{Milestone 5: browser inference and splat rendering (weeks 6--7)}
+\begin{enumerate}[itemsep=2pt]
+  \item ONNX export with symbolic shapes; a parity test asserting PyTorch and onnxruntime agree to $10^{-4}$ over a 100-step rollout, \emph{before} any frontend code touches the model.
+  \item Next.js + React Three Fiber app: load the scene packet, ONNX Runtime Web (WebGPU, WASM fallback), TypeScript graph builder and integrator, splat rendering with per-body batches, OBB picking, impulse UI, sliders, reset.
+  \item Reconstruction endpoint: FastAPI on Modal, or precompute scene packets and serve them as static files, which removes all server cost and cold starts while reviewers still get full interactivity.
+  \item Deploy to Vercel.
+\end{enumerate}
+\textbf{Deliverable:} public URL. Photo-derived objects, poked in a browser, physics by neural network, client-side.
+
+\subsection{Milestone 6: polish and writeup (week 8)}
+Dark-mode UI pass, a 60-second screen recording, a README with the architecture diagram, evaluation table, and honest limitations. Optionally the multi-view capture path for a hero scene.
+
+%=====================================================================
+\section{Risks and Fallbacks}
+%=====================================================================
+
+\begin{center}
+\begin{tabular}{@{}p{5.2cm}p{2.2cm}p{6.6cm}@{}}
+\toprule
+\textbf{Risk} & \textbf{Likelihood} & \textbf{Fallback} \\
+\midrule
+Per-body head underfits contact detail & Medium & Per-particle head + Kabsch projection (built in Milestone 2, one config switch) \\
+Single-image recon too poor to cluster & Medium & Multi-view phone capture path; or reconstruct each object separately and compose \\
+LGM/TripoSR broken on MPS & Medium & Run Stage A on Colab or a rented GPU; it is offline and one-shot \\
+ONNX export op gaps & Low--Med & Implement scatter/graph ops in TypeScript, keep only MLPs in ONNX; or WebSocket + local server for live demos and a recorded video for the public page \\
+Browser too slow at 60\,Hz & Low & 30\,Hz physics + interpolation; coarser particle spacing \\
+Rolling never settles (pencils creep or jitter at rest) & Medium & Overweight low-energy rolling states in the data mix; settle damping below a kinetic-energy threshold; if needed, restrict the public demo to non-rolling shapes \\
+Long-rollout drift despite noise injection & Medium & Stronger noise, longer rollout fine-tuning, soft settle damping near zero kinetic energy \\
+MPS training too slow & Low & One A100 day, $<\$30$; the code is device-agnostic \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The compound risk profile is favorable because every medium risk has a fallback that is built into an earlier milestone rather than bolted on later.
+
+%=====================================================================
+\section{Budget}
+%=====================================================================
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Item} & \textbf{Cost} & \textbf{Notes} \\
+\midrule
+Data generation & \$0 & PyBullet, CPU, local \\
+Training & \$0 -- \$25 & MPS free; optional A100 day for the final model \\
+Reconstruction & \$0 & Local MPS, or free Colab for LGM \\
+Hosting & \$0 & Vercel Hobby; static scene packets; client-side inference \\
+Test objects and a phone & already owned & \\
+\midrule
+\textbf{Total} & \textbf{\$0 -- \$25} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%=====================================================================
+\begin{thebibliography}{9}
+\bibitem{gns} A.\ Sanchez-Gonzalez, J.\ Godwin, T.\ Pfaff, R.\ Ying, J.\ Leskovec, P.\ Battaglia. \emph{Learning to Simulate Complex Physics with Graph Networks.} ICML 2020.
+\bibitem{fignet} K.\ Allen, T.\ Lopez-Guevara, Y.\ Rubanova, et al. \emph{Learning Rigid Dynamics with Face Interaction Graph Networks.} ICLR 2023.
+\bibitem{3dgs} B.\ Kerbl, G.\ Kopanas, T.\ Leimk\"uhler, G.\ Drettakis. \emph{3D Gaussian Splatting for Real-Time Radiance Field Rendering.} SIGGRAPH 2023.
+\bibitem{lgm} J.\ Tang, Z.\ Chen, X.\ Chen, T.\ Wang, G.\ Zeng, Z.\ Liu. \emph{LGM: Large Multi-View Gaussian Model for High-Resolution 3D Content Creation.} ECCV 2024.
+\bibitem{triposr} D.\ Tochilkin, D.\ Pankratz, Z.\ Liu, et al. \emph{TripoSR: Fast 3D Object Reconstruction from a Single Image.} arXiv:2403.02151, 2024.
+\end{thebibliography}
+
+\end{document}

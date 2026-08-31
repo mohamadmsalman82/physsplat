@@ -1,0 +1,610 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb, amsfonts}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage[most]{tcolorbox}
+\usepackage[colorlinks=true, linkcolor=blue!60!black, urlcolor=blue!60!black, citecolor=blue!60!black]{hyperref}
+\usepackage{parskip}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  frame=single,
+  framesep=4pt,
+  backgroundcolor=\color{gray!6},
+  showstringspaces=false,
+  tabsize=2
+}
+
+% --- Boxes ---------------------------------------------------------
+\newtcolorbox{concept}[1]{breakable, colback=blue!4, colframe=blue!45!black,
+  title={Concept: #1}, fonttitle=\bfseries}
+\newtcolorbox{why}{breakable, colback=violet!4, colframe=violet!50!black,
+  title={Why this matters}, fonttitle=\bfseries}
+\newtcolorbox{checkpoint}{breakable, colback=green!5, colframe=green!40!black,
+  title={Checkpoint: you are done with this step when}, fonttitle=\bfseries}
+\newtcolorbox{trap}{breakable, colback=orange!8, colframe=orange!70!black,
+  title={Common trap}, fonttitle=\bfseries}
+
+% --- Step macro ----------------------------------------------------
+\newcounter{stepnum}
+\newcommand{\step}[1]{%
+  \refstepcounter{stepnum}%
+  \subsection*{Step \thestepnum: #1}%
+  \addcontentsline{toc}{subsection}{Step \thestepnum: #1}}
+
+\newcommand{\x}{\mathbf{x}}
+\newcommand{\vv}{\mathbf{v}}
+\newcommand{\g}{\mathbf{g}}
+\newcommand{\R}{\mathbf{R}}
+\newcommand{\tr}{\mathbf{t}}
+
+\title{\textbf{Building PhysSplat: A Step-by-Step Tutorial}\\[6pt]
+\large From an empty folder to a photo-to-interactive-physics demo in the browser}
+\author{Mohamad Salman}
+\date{August 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This is the companion tutorial to the PhysSplat design document. Where the design document says \emph{what} the system is, this document walks through \emph{building} it: 70 numbered steps organized into 9 phases, each with an explanation of what you are doing and why, code or commands where they help, and a checkpoint that tells you whether the step worked before you move on. Part I teaches all the background knowledge the build assumes: rigid-body physics, rotations, 3D Gaussian Splatting, graph neural networks, learned simulation, and the tool stack. Part II is the build itself. Read Part I once, then keep it open as a reference while working through Part II.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%====================================================================
+\section*{How to Use This Document}
+\addcontentsline{toc}{section}{How to Use This Document}
+%====================================================================
+
+\textbf{The build has 9 phases.} Each phase ends with something you can see or run. Do them in order; later phases import code from earlier ones.
+
+\begin{center}
+\begin{tabular}{@{}clll@{}}
+\toprule
+\textbf{Phase} & \textbf{What you build} & \textbf{Steps} & \textbf{Rough time} \\
+\midrule
+0 & Environment and repository skeleton & 1--5 & half a day \\
+1 & Synthetic physics dataset (PyBullet) & 6--16 & 1 week \\
+2 & The graph network simulator & 17--28 & 1--2 weeks \\
+3 & Training it & 29--36 & 1 week (+ compute) \\
+4 & Evaluating it & 37--41 & 2--3 days \\
+5 & Local interactive demo & 42--47 & 3--4 days \\
+6 & Photo $\rightarrow$ 3D reconstruction pipeline & 48--57 & 1 week \\
+7 & Browser inference and splat rendering & 58--67 & 1--2 weeks \\
+8 & Polish, deploy, write up & 68--70 & 3--4 days \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Box legend.} Blue \emph{Concept} boxes teach an idea the first time it is needed. Violet \emph{Why this matters} boxes connect a step to the big picture. Green \emph{Checkpoint} boxes are pass/fail tests; do not continue past a failing checkpoint. Orange \emph{Common trap} boxes are mistakes that cost days if you hit them blind.
+
+\textbf{The one-paragraph map of what you are building.} A photo of simple objects (blocks, pencils, erasers) on a table is lifted into a cloud of 3D Gaussians (a modern photorealistic 3D format). That cloud is split into individual objects automatically. Each object is dotted with a few hundred surface points called \emph{physics particles}. A graph neural network, trained beforehand on millions of examples of simulated physics, repeatedly predicts how those particles move under gravity, contact, and your mouse pokes. The Gaussians ride along rigidly with their object, so what you see in the browser is the photo-derived scene obeying learned physics at 60 frames per second.
+
+%====================================================================
+\part{Background Knowledge}
+%====================================================================
+
+Everything in this part is used later. If a section is already familiar, skim its boxed summaries and move on.
+
+%--------------------------------------------------------------------
+\section{Vectors, Rotations, and Poses}
+%--------------------------------------------------------------------
+
+A 3D \textbf{vector} $\x = (x, y, z)$ describes a position or direction. We use $z$ as ``up'' throughout, so gravity is $\g = (0, 0, -9.81)\,\text{m/s}^2$.
+
+A \textbf{rigid body} is an object that moves without changing shape. Its configuration at any instant, called its \textbf{pose}, is fully described by two things: where it is (a translation vector $\tr \in \mathbb{R}^3$) and how it is turned (a rotation).
+
+\begin{concept}{Three ways to write a rotation}
+\begin{itemize}[itemsep=2pt]
+  \item \textbf{Rotation matrix} $\R$: a $3\times3$ matrix with $\R^\top \R = \mathbf{I}$ and $\det \R = 1$. Rotating a point is matrix multiplication: $\x' = \R\x$. Easy to compose and apply, 9 numbers.
+  \item \textbf{Quaternion} $\mathbf{q} = (w, x, y, z)$, unit length: 4 numbers, no gimbal problems, the storage format used by PyBullet, Gaussian splat files, and Three.js. You will convert quaternions to matrices often; every library has a helper.
+  \item \textbf{Axis-angle / rotation vector} $\boldsymbol{\omega}\Delta t$: a vector whose direction is the rotation axis and length is the angle. This is how angular velocity turns into an incremental rotation: $\R_{t+1} = \exp([\boldsymbol{\omega}\Delta t]_\times)\,\R_t$, where $[\cdot]_\times$ is the skew-symmetric cross-product matrix and $\exp$ is the matrix exponential (Rodrigues' formula computes it in closed form; \texttt{scipy.spatial.transform.Rotation.from\_rotvec} does it for you).
+\end{itemize}
+\end{concept}
+
+The set of all poses $(\R, \tr)$ is called \textbf{SE(3)}. When this tutorial says ``integrate on SE(3),'' it just means: update the translation with the linear velocity and update the rotation with the angular velocity, using the formulas above.
+
+\textbf{Body frame vs.\ world frame.} Each body carries its own coordinate system centered on it. A point that sits at body-frame offset $\mathbf{r}$ appears in the world at $\x = \R\,\mathbf{r} + \tr$. This one formula powers the whole project: if we know each particle's fixed body-frame offset and the body's current pose, we know every particle's world position, and vice versa.
+
+%--------------------------------------------------------------------
+\section{Rigid-Body Physics in Ten Minutes}
+%--------------------------------------------------------------------
+
+\textbf{State.} A rigid body's motion state is four quantities: position $\tr$, rotation $\R$, linear velocity $\vv$ (m/s), and angular velocity $\boldsymbol{\omega}$ (rad/s, pointing along the spin axis).
+
+\textbf{Newton, twice.} Forces change linear velocity ($\mathbf{F} = m\mathbf{a}$); torques change angular velocity ($\boldsymbol{\tau} = \mathbf{I}\boldsymbol{\alpha}$, where $\mathbf{I}$ is the \textbf{inertia tensor}, the rotational analog of mass). A pencil has tiny inertia about its long axis and large inertia about the others, which is why it spins easily lengthwise and why we feed the inertia diagonal to the neural network as a feature.
+
+\textbf{Integration.} A simulator advances time in small steps $\Delta t$. The scheme used everywhere in this project is \textbf{semi-implicit Euler}: update velocity first, then use the \emph{new} velocity to update position:
+\begin{align}
+\vv_{t+1} &= \vv_t + \mathbf{a}\,\Delta t, & \tr_{t+1} &= \tr_t + \vv_{t+1}\,\Delta t,
+\end{align}
+and the same pattern for rotation. It is one line more than naive Euler and dramatically more stable for oscillating and contacting systems.
+
+\begin{concept}{Contact, friction, restitution}
+When bodies touch, the simulator must prevent interpenetration and apply friction:
+\begin{itemize}[itemsep=2pt]
+  \item \textbf{Normal contact force} pushes bodies apart along the contact normal. Classical engines solve constraint equations; our neural network will \emph{learn} to produce the same effect from data.
+  \item \textbf{Friction coefficient} $\mu$ (typically 0.3--0.9 for everyday objects) scales how much tangential force resists sliding. Higher $\mu$: things grip. Lower: things slide.
+  \item \textbf{Restitution} $e \in [0,1]$ is bounciness: 0 is a dead thud, 1 is a perfect bounce. Desk objects are 0--0.4.
+\end{itemize}
+These are exactly the parameters we randomize in training data so the learned model covers the whole plausible range.
+\end{concept}
+
+\textbf{Why learned physics at all?} Classical engines need each object as a clean mesh with known parameters. Our objects come from a photo: fuzzy, incomplete, unlabeled. A learned simulator that operates on \emph{surface point clouds} accepts exactly what reconstruction produces. The learned model imitates a classical engine (PyBullet generates its training data) but consumes a photo-compatible representation.
+
+%--------------------------------------------------------------------
+\section{3D Gaussian Splatting}
+%--------------------------------------------------------------------
+
+\begin{concept}{What a Gaussian splat is}
+A scene is represented as a cloud of tens of thousands of small colored, semi-transparent 3D blobs. Each blob (a ``Gaussian'') has:
+\begin{itemize}[itemsep=2pt]
+  \item a \textbf{mean} $\boldsymbol{\mu} \in \mathbb{R}^3$: its center position;
+  \item a \textbf{covariance} $\boldsymbol{\Sigma}$: its shape and orientation, stored as 3 scales plus a quaternion (an ellipsoid);
+  \item an \textbf{opacity} $\alpha$; and
+  \item \textbf{color}, stored as spherical-harmonic (SH) coefficients so color can vary slightly with viewing angle. The order-0 (``DC'') coefficient is the base RGB color, which is all we need for clustering.
+\end{itemize}
+To render, every Gaussian is projected onto the screen as a soft ellipse (``splatted''), the ellipses are sorted by depth, and blended back-to-front. This renders photorealistically at real-time rates, which is why it replaced NeRF for interactive uses.
+\end{concept}
+
+Two properties matter for us. First, splats are a \emph{point-based} format, so grouping them into objects is a clustering problem, not a mesh-cutting problem. Second, moving a rigid group of Gaussians is easy: transform each mean by $\boldsymbol{\mu}' = \R\boldsymbol{\mu} + \tr$ and rotate each covariance by $\boldsymbol{\Sigma}' = \R\boldsymbol{\Sigma}\R^\top$ (in practice, just multiply the stored quaternion). Nothing about the visual quality breaks when a splat cloud moves rigidly.
+
+\textbf{Where our splats come from.} Feed-forward models (TripoSR, LGM) take one photo of an object and directly output a 3D representation in seconds, having learned shape priors from millions of 3D assets. They hallucinate the unseen back of the object, which is acceptable for simple convex shapes. The alternative is classical multi-view splatting from 30--60 photos, which is higher quality but more effort per scene.
+
+%--------------------------------------------------------------------
+\section{Neural Networks and Graph Neural Networks}
+%--------------------------------------------------------------------
+
+\textbf{An MLP} (multi-layer perceptron) is the basic block: alternating matrix multiplications and nonlinearities that learn to map an input vector to an output vector. Every learnable piece of our model is an MLP; the architecture is about \emph{how MLPs are wired together}.
+
+\begin{concept}{Message passing on a graph}
+A graph has nodes and edges. A \textbf{graph neural network} (GNN) computes by repeated rounds of:
+\begin{enumerate}[itemsep=1pt]
+  \item every edge computes a \textbf{message} from the feature vectors of its two endpoint nodes (an MLP does this);
+  \item every node \textbf{aggregates} the messages arriving on its edges (we sum them);
+  \item every node \textbf{updates} its own feature vector from the aggregate (another MLP).
+\end{enumerate}
+One round lets information travel one hop. Ten rounds let it travel ten hops.
+\end{concept}
+
+\begin{why}
+Physics \emph{is} message passing. A contact force is literally a message between two touching particles: ``I am here, moving this way, push back accordingly.'' A GNN whose edges connect nearby particles has the same structure as the physical interaction, which is why this architecture family (a \emph{relational inductive bias}) learns simulation well while a plain MLP on flattened coordinates learns nothing usable.
+\end{why}
+
+Three practical facts you will use constantly:
+\begin{itemize}[itemsep=2pt]
+  \item \textbf{Permutation invariance:} summing messages means node ordering is irrelevant, so the same network handles any number of particles and objects.
+  \item \textbf{Relative features only:} we feed edges the \emph{difference} of endpoint positions, never absolute positions. The physics of a stack is the same anywhere on the table, and building that in (translation invariance) saves the network from having to learn it.
+  \item \textbf{Normalization:} neural networks train well when inputs and targets have roughly zero mean and unit variance. Raw physics data does not (gravity dominates; contact spikes are rare and huge). We standardize every feature dimension using dataset statistics, and this single detail is the difference between a model that converges and one that does not.
+\end{itemize}
+
+%--------------------------------------------------------------------
+\section{Learned Simulation: The GNS Recipe}
+\label{sec:gnsbg}
+%--------------------------------------------------------------------
+
+The architecture we build is a \textbf{Graph Network Simulator} (GNS, Sanchez-Gonzalez et al., ICML 2020), adapted for rigid bodies (in the spirit of FIGNet, ICLR 2023). The recipe:
+
+\begin{enumerate}[itemsep=2pt]
+  \item \textbf{Encode:} lift each node's raw features (recent velocities, mass, etc.) and each edge's raw features (relative displacement) into 128-dimensional vectors with small MLPs.
+  \item \textbf{Process:} 10 rounds of message passing with residual connections.
+  \item \textbf{Decode:} read out an acceleration.
+  \item \textbf{Integrate:} apply the acceleration with semi-implicit Euler to get the next state. Repeat forever. Running the model repeatedly on its own output is called a \textbf{rollout}.
+\end{enumerate}
+
+\begin{concept}{The two ideas that make rollouts stable}
+\textbf{Idea 1: rigidity by construction.} If the network predicts a separate acceleration for every particle, small per-particle errors accumulate and a solid block slowly deforms and melts over hundreds of steps. Instead we pool the processed particle features \emph{within each body} and decode one linear plus one angular acceleration for the whole body (6 numbers). Every particle then moves under one rigid transform, so melting is impossible.
+
+\textbf{Idea 2: noise injection.} A model trained only on perfect simulator states has never seen its own slightly-wrong predictions, so at rollout time errors compound and the simulation drifts. The fix: during training, corrupt the input state with small Gaussian noise while keeping the target computed from the clean state. The model thereby learns to \emph{pull perturbed states back toward the truth}, which is exactly the skill a rollout needs. This is the single highest-leverage trick in the entire project.
+\end{concept}
+
+\textbf{Residual dynamics.} We add gravity analytically in the integrator and let the network learn only the \emph{rest} (contact and friction). Learning a residual around a known baseline is easier than learning everything, and it guarantees free fall is exactly right.
+
+%--------------------------------------------------------------------
+\section{The Tool Stack}
+%--------------------------------------------------------------------
+
+\begin{itemize}[itemsep=3pt]
+  \item \textbf{Python + uv:} \texttt{uv} is a fast package/environment manager. All training-side code is Python.
+  \item \textbf{PyTorch on MPS:} PyTorch's Apple-GPU backend (\texttt{torch.device("mps")}). Caveats: no float64 (use float32 everywhere), occasional missing ops (set \texttt{PYTORCH\_ENABLE\_MPS\_FALLBACK=1} so they fall back to CPU instead of crashing).
+  \item \textbf{PyBullet:} a classical rigid-body physics engine with a simple Python API. Our ground-truth data factory. Has a GUI mode for eyeballing scenes.
+  \item \textbf{trimesh:} mesh utilities: create primitive meshes, sample surfaces, convex hulls, inertia tensors.
+  \item \textbf{Rerun (\texttt{rerun-sdk}):} a 3D visualization viewer you log data to from Python (\texttt{rr.log(...)}). You will use it dozens of times a day; it replaces writing any debug viewer.
+  \item \textbf{h5py:} HDF5 files for the dataset (fast array storage with named groups).
+  \item \textbf{HDBSCAN / RANSAC (scipy, scikit-learn, hdbscan):} clustering and robust plane fitting, used to split the reconstruction into objects and find the table surface. HDBSCAN finds clusters of varying density without being told how many clusters exist. RANSAC fits a model (here, a plane) by repeatedly fitting to random minimal subsets and keeping the fit with the most inliers, which makes it immune to outliers.
+  \item \textbf{ONNX + ONNX Runtime Web:} ONNX is a portable saved-model format; ONNX Runtime Web executes it in the browser on WebGPU or WASM. This is how the trained network runs client-side.
+  \item \textbf{Next.js + React Three Fiber (R3F):} the web app and its 3D canvas. R3F is React bindings for Three.js. A splat-rendering library (GaussianSplats3D or Spark) draws the Gaussians.
+  \item \textbf{TripoSR / LGM:} pretrained single-image-to-3D models from Hugging Face. Downloaded once, never trained.
+\end{itemize}
+
+\newpage
+%====================================================================
+\part{The Build}
+%====================================================================
+
+%--------------------------------------------------------------------
+\section{Phase 0: Environment and Skeleton}
+%--------------------------------------------------------------------
+
+\step{Install the toolchain}
+Install \texttt{uv} (\texttt{curl -LsSf https://astral.sh/uv/install.sh | sh}), Node.js 20+ (for Phase 7), and the Rerun viewer. Verify \texttt{git}, \texttt{python3 --version} (3.11+).
+
+\step{Create the project and Python environment}
+\begin{lstlisting}
+uv init physsplat && cd physsplat
+uv add torch numpy scipy pybullet h5py rerun-sdk hdbscan scikit-learn trimesh onnx onnxruntime matplotlib
+\end{lstlisting}
+
+\step{Verify the Apple GPU works}
+\begin{lstlisting}
+uv run python -c "import torch; print(torch.backends.mps.is_available())"
+\end{lstlisting}
+\begin{checkpoint}
+It prints \texttt{True}. If not, reinstall PyTorch; nothing else in Phase 2+ will be fast until this passes.
+\end{checkpoint}
+
+\step{Lay out the repository}
+\begin{lstlisting}
+physsplat/
+  physsplat/
+    datagen/      # Phase 1: scenes, sampling, dataset writer
+    model/        # Phase 2: GNN, integrator, losses
+    train/        # Phase 3: training loop, config
+    eval/         # Phase 4: rollout metrics, video export
+    recon/        # Phase 6: photo -> splats -> bodies -> particles
+    export/       # Phase 7: ONNX export + parity tests
+    common/       # shared: particle sampler, geometry helpers, constants
+  web/            # Phase 7: Next.js app
+  scripts/        # runnable entry points
+  data/           # generated datasets (gitignored)
+  checkpoints/    # trained models (gitignored)
+\end{lstlisting}
+Put shared constants in \texttt{common/constants.py} now: \texttt{DT = 1/60}, \texttt{GRAVITY = 9.81}, \texttt{PARTICLE\_SPACING = 0.004}, \texttt{CONTACT\_RADIUS = 1.5 * PARTICLE\_SPACING}, \texttt{HISTORY = 5}. Many bugs later are two files disagreeing on one of these; a single source of truth prevents them.
+
+\step{First Rerun hello-world}
+\begin{lstlisting}
+uv run python -c "
+import rerun as rr, numpy as np
+rr.init('hello', spawn=True)
+rr.log('points', rr.Points3D(np.random.rand(100,3), radii=0.01))"
+\end{lstlisting}
+\begin{checkpoint}
+The Rerun viewer opens showing 100 random points you can orbit. You now have a 3D debugger for the whole project.
+\end{checkpoint}
+
+%--------------------------------------------------------------------
+\section{Phase 1: The Synthetic Dataset}
+%--------------------------------------------------------------------
+
+\begin{why}
+Everything the neural network will ever know about physics comes from this phase. The model never sees photos or Gaussians during training; it sees only what you generate here: surface-point clouds of simple objects moving under PyBullet's physics. Quality bar: if a recorded trajectory looks wrong to your eye in Rerun, it will poison training.
+\end{why}
+
+\step{Define the object family}
+In \texttt{datagen/shapes.py}, write a function \texttt{random\_shape(rng)} returning a description (type, dimensions) drawn from: box (edges 2--8\,cm, aspect up to 3:1), cylinder/capsule (radius 0.3--1.5\,cm, length up to 16\,cm, covering pencils), random convex polyhedron (convex hull of 10--20 random points, scaled to 2--8\,cm). Also write \texttt{shape\_to\_trimesh(shape)} producing a \texttt{trimesh} mesh, and compute mass and the inertia diagonal from the mesh at fixed density (trimesh provides \texttt{mesh.mass\_properties}).
+
+\step{Build one static scene in PyBullet}
+In \texttt{datagen/scenes.py}: connect with \texttt{p.connect(p.GUI)}, add a ground plane, spawn 2--6 random shapes. Implement three placement regimes and pick one at random per scene: (a) a rough stack with small horizontal offsets, (b) objects scattered lying flat (the pencil-on-desk case), (c) a drop from 5--15\,cm. Randomize friction $\mu \in [0.3, 0.9]$ and restitution $\in [0, 0.4]$ per object.
+\begin{checkpoint}
+Running the script opens the PyBullet window and you watch plausible scenes settle. Watch at least ten. Anything jittering, exploding, or sinking into the floor gets fixed now.
+\end{checkpoint}
+
+\step{Record trajectories}
+Simulate at 240\,Hz internally (PyBullet default is fine) and record every 4th step, giving 60\,Hz data. After a 100-step settle period, record 300 frames of: per-body position, quaternion, linear and angular velocity (\texttt{p.getBasePositionAndOrientation}, \texttt{p.getBaseVelocity}).
+
+\step{Add recorded impulses (the ``poke'' channel)}
+At 1--3 random recorded frames per trajectory, apply \texttt{p.applyExternalForce} at a random point on a random body's surface with random direction and magnitude (calibrate magnitudes so pokes visibly move objects without launching them off-screen). Save, per impulse: the frame index, body id, application point, and force vector. This is the action channel: at inference time a mouse drag will be encoded the same way.
+\begin{trap}
+PyBullet's \texttt{applyExternalForce} must be re-applied every internal substep for the duration you intend, and uses flags \texttt{p.WORLD\_FRAME}. Forgetting the re-apply gives impulses 4$\times$ weaker than logged, and the model later learns wrong poke responses that you will chase for days in Phase 5.
+\end{trap}
+
+\step{Write the shared particle sampler}
+In \texttt{common/particles.py}, the most reused function in the project:
+\begin{lstlisting}[language=Python]
+def sample_surface(mesh: trimesh.Trimesh, spacing=PARTICLE_SPACING, cap=400):
+    # oversample the surface, then farthest-point-subsample to ~uniform spacing
+    dense, _ = trimesh.sample.sample_surface(mesh, 20000)
+    picked = [0]
+    d = np.linalg.norm(dense - dense[0], axis=1)
+    while d.max() > spacing and len(picked) < cap:
+        i = int(d.argmax()); picked.append(i)
+        d = np.minimum(d, np.linalg.norm(dense - dense[i], axis=1))
+    return dense[picked]          # (P, 3) in the mesh's own (body) frame
+\end{lstlisting}
+Points are returned in the \emph{body frame}; store them once per object as offsets $\mathbf{r}_i$ (relative to the center of mass). World positions at any frame are $\x_i = \R_t \mathbf{r}_i + \tr_t$.
+\begin{why}
+Fixed \emph{spacing} (not fixed count) means a pencil and a big block have identical local point density, so one global contact radius works for all shapes. And because Phase 6 will run \emph{this same function} on reconstructed objects, training data and real data become statistically interchangeable, which is the entire reason sim-to-real transfer works here.
+\end{why}
+
+\step{Write the dataset to HDF5}
+In \texttt{datagen/writer.py}: one HDF5 group per trajectory containing per-body constant data (offsets $\mathbf{r}$, mass, inertia diagonal, friction, restitution) and per-frame data (position, quaternion, velocities, impulse channel). Store poses, not world-space particle clouds: it is 100$\times$ smaller and guarantees the ground truth is exactly rigid.
+
+\step{Visual audit in Rerun}
+Write \texttt{scripts/view\_traj.py}: load a trajectory, reconstruct world-space particles per frame, log to Rerun with per-body colors, log impulse arrows when active.
+\begin{checkpoint}
+Scrubbing the Rerun timeline shows: stacks settle and stay still; pokes visibly shove objects; cylinders roll and stop; nothing interpenetrates the floor. Audit at least 10 random trajectories.
+\end{checkpoint}
+
+\step{Generate the full dataset}
+Parallelize with \texttt{multiprocessing} (one PyBullet \texttt{DIRECT}-mode instance per worker), seed per trajectory for reproducibility. Target 5{,}000 trajectories. Split 90/5/5 into train/val/test \emph{by trajectory}, never by frame (frames of one trajectory are nearly identical; splitting by frame leaks test data into training).
+
+\step{Compute normalization statistics}
+Over the training split only, compute mean and standard deviation of: velocity features, acceleration targets (linear and angular, per-body), and edge displacement features. Save to \texttt{data/stats.json}. These exact numbers ship all the way to the browser in Phase 7.
+
+\step{Build the PyTorch \texttt{Dataset}}
+In \texttt{train/dataset.py}, a \texttt{\_\_getitem\_\_} that picks a trajectory and frame $t \geq 5$ and returns: world particle positions at $t$, the 5-step velocity history (finite differences of positions), body ids, per-body mass/inertia, the impulse channel at $t$, and the \emph{target}: each body's actual linear and angular acceleration from $t$ to $t{+}1$ minus gravity (the residual the network must learn). Apply the domain-randomization corruptions here with a flag: 0.5--2\,mm surface noise on offsets, random 5--15\% particle dropout.
+\begin{checkpoint}
+A quick script draws 100 samples, checks shapes and dtypes (all float32), checks targets are finite, and histograms the normalized targets: roughly zero-mean, unit-variance, heavy-tailed (contact spikes). If the histogram is not centered, your gravity subtraction or normalization is wrong.
+\end{checkpoint}
+
+%--------------------------------------------------------------------
+\section{Phase 2: The Graph Network Simulator}
+%--------------------------------------------------------------------
+
+\step{The graph builder}
+In \texttt{model/graph.py}: given particle positions, return the edge list $\{(i,j) : \lVert\x_i - \x_j\rVert < r_{\text{contact}}\}$. Implement with a uniform grid hash: bucket points into cells of size $r_{\text{contact}}$, compare only within neighboring cells. Also return per-edge features: displacement $\x_j - \x_i$, its norm, and a same-body flag.
+
+\step{Unit-test the graph builder}
+Compare against the brute-force $O(N^2)$ distance matrix on 20 random point sets. Exact match required.
+\begin{checkpoint}
+The test passes, and building the graph for a 1{,}500-particle scene takes under a couple of milliseconds. This function is called every physics step forever after; it must be both correct and fast.
+\end{checkpoint}
+
+\step{Encoder and processor}
+In \texttt{model/gnn.py}, plain PyTorch, no PyTorch Geometric:
+\begin{lstlisting}[language=Python]
+class MPBlock(nn.Module):
+    def forward(self, h, e, senders, receivers):
+        msg_in = torch.cat([e, h[senders], h[receivers]], dim=-1)
+        e = e + self.edge_mlp(msg_in)                      # update edges
+        agg = torch.zeros_like(h).index_add_(0, receivers, e)  # sum messages
+        h = h + self.node_mlp(torch.cat([h, agg], dim=-1)) # update nodes
+        return h, e
+\end{lstlisting}
+Encoder: 2-layer MLPs lifting node features (15--20 dims) and edge features (5 dims) to width 128 with LayerNorm. Processor: 10 \texttt{MPBlock}s.
+\begin{trap}
+Get \texttt{senders}/\texttt{receivers} orientation consistent everywhere, and include both edge directions $(i,j)$ and $(j,i)$. A silent asymmetry here trains to mediocre loss and terrible rollouts, and is miserable to find later. Write a 5-particle hand-checkable test now.
+\end{trap}
+
+\step{The per-body rigid decoder}
+Mean-pool final node embeddings within each body (an \texttt{index\_add\_} divided by counts), then a 2-layer MLP to 6 outputs: $\Delta\vv_b$ and $\Delta\boldsymbol{\omega}_b$, in normalized units.
+
+\step{The fallback per-particle decoder plus Kabsch projection}
+Also implement: per-node MLP to 3D accelerations, free integration, then snap each body to the best-fit rigid transform. Kabsch: with predicted positions $\tilde\x_i$ and offsets $\mathbf{r}_i$, form $\mathbf{A}_b = \sum_i (\tilde\x_i - \bar\x_b)\mathbf{r}_i^\top$, SVD $\mathbf{A}_b = \mathbf{U}\mathbf{S}\mathbf{V}^\top$, then $\R_b = \mathbf{U}\,\mathrm{diag}(1,1,\det(\mathbf{U}\mathbf{V}^\top))\,\mathbf{V}^\top$ and $\tr_b = \bar\x_b$. Both heads share the encoder/processor; select by config flag.
+\begin{why}
+The per-body head is the primary design (rigidity is exact, output is tiny). But pooling can blur \emph{where} on a body contact happened; if it underfits in Phase 3, you switch one flag rather than redesigning. Cheap insurance built at the right time.
+\end{why}
+
+\step{The integrator}
+In \texttt{model/integrator.py}: denormalize predictions, add gravity, semi-implicit Euler per body, rotation update via rotation-vector exponential, then particles from body poses. Keep it a pure function of (state, prediction) $\rightarrow$ state; Phase 7 reimplements it in TypeScript and purity makes the two easy to compare.
+
+\step{Assemble the one-step model and overfit a single trajectory}
+Wire encode $\rightarrow$ process $\rightarrow$ decode into one module. Then the most diagnostic experiment of the project: train on \emph{one} trajectory until the loss approaches zero.
+\begin{checkpoint}
+Single-trajectory loss falls by 3--4 orders of magnitude and its rollout visually replays the trajectory. If it will not overfit, the bug is in features, normalization, or indexing, and no quantity of data will hide it. Do not proceed until this passes.
+\end{checkpoint}
+
+\step{The rollout function}
+\texttt{rollout(model, initial\_state, actions, n\_steps)}: loop of graph-build, predict, integrate, maintaining the 5-step velocity history. Log any rollout to Rerun with one call. You will run this function thousands of times.
+
+%--------------------------------------------------------------------
+\section{Phase 3: Training}
+%--------------------------------------------------------------------
+
+\step{The training loop}
+\texttt{train/loop.py}: AdamW, learning rate $10^{-4}$ decayed exponentially to $10^{-6}$; batches of 2--4 scenes collated into one big disjoint graph (concatenate nodes, offset edge indices); MSE on normalized 6D body accelerations; gradient clip at 1.0; checkpoints and a small metrics log (loss curves, learning rate) every few hundred steps. Build graphs in dataloader workers, not the training step.
+
+\step{Noise injection}
+Implement the random-walk corruption from Section~\ref{sec:gnsbg}: per sample, add accumulated Gaussian noise (total $\sigma \approx$ 1--3\,mm) to the position/velocity history while the target still points to the true clean next state. Make $\sigma$ a config value; you will tune it.
+\begin{why}
+Without this, your Phase 4 rollouts will drift within a second or two and you might wrongly conclude the whole approach fails. With it, rollouts of many hundreds of steps stay plausible. It is the difference between the project working and not.
+\end{why}
+
+\step{Short training run on MPS}
+Train 20k steps on 10\% of the data. Watch: loss decreasing smoothly, throughput (steps/sec), MPS actually in use (Activity Monitor GPU tab). Fix input-pipeline stalls now.
+
+\step{Rollout-based validation}
+Every 2{,}500 training steps, run 5 held-out validation rollouts of 300 steps and log translation/rotation error vs.\ ground truth. Single-step loss is a poor proxy for rollout quality; this metric is your real compass.
+
+\step{Full training run}
+300k--500k steps on the full dataset. On the M4 Pro expect 1--3 days wall clock; alternatively rent one A100 day ($<\$30$), the code is device-agnostic. While it runs, start Phase 5's scaffolding.
+
+\step{Qualitative milestones, in order}
+Check these against rollouts as training progresses: (1) a dropped box falls, lands, stops; (2) a two-box stack stays standing indefinitely; (3) a poked stack topples plausibly; (4) a flicked pencil rolls and comes to rest. They tend to emerge in roughly that order; (4) is the hardest.
+
+\step{Rollout fine-tuning}
+From the converged checkpoint: 20k further steps on 4--8-step unrolled loss (backprop through the integrator, which is differentiable) at learning rate $10^{-5}$. Tightens long-horizon behavior.
+
+\step{Head comparison (only if needed)}
+If milestone (3) or (4) fails after tuning noise $\sigma$ and rerunning: flip the config flag to the per-particle + Kabsch head and retrain. Keep whichever wins on validation rollout error.
+\begin{checkpoint}
+Phase 3 exit: all four qualitative milestones pass, and 300-step validation rollout error is stable run-to-run.
+\end{checkpoint}
+
+%--------------------------------------------------------------------
+\section{Phase 4: Evaluation}
+%--------------------------------------------------------------------
+
+\step{Metrics harness}
+\texttt{eval/metrics.py} over the held-out test split: per-body translation and rotation error at 50/150/300 steps; interpenetration depth (bodies and floor); stability (fraction of initially-at-rest scenes still at rest after 300 unperturbed steps); energy trend over passive rollouts (must not grow).
+
+\step{Side-by-side videos}
+Same initial state and same pokes through PyBullet and through your model, rendered side by side (Rerun screen capture or matplotlib animation). These become the centerpiece of the README.
+
+\step{Stress tests}
+Taller stacks than training ever saw, more objects, maximum pokes, extreme aspect ratios. Note where it breaks; these bounds become the demo's guardrails (e.g., cap user impulse strength at the training maximum).
+
+\step{Numbers table}
+Freeze one table of the metrics for the writeup, tied to a named checkpoint file. This checkpoint is now ``the model'' for all later phases.
+
+\step{Failure gallery}
+Save 3--5 characteristic failures (a pencil that jitters at rest, a stack that leans). Honest limitations make the writeup stronger, and you will recognize regressions instantly later.
+
+%--------------------------------------------------------------------
+\section{Phase 5: Local Interactive Demo}
+%--------------------------------------------------------------------
+
+\begin{why}
+Before any reconstruction or browser complexity, prove the \emph{interaction loop}: click, poke, watch physics respond, reset. This phase uses synthetic scenes rendered as plain meshes, a Python server running the model on MPS, and a minimal web page. Every hard problem solved here (impulse encoding, reset, pacing) transfers directly to Phase 7.
+\end{why}
+
+\step{The scene packet format}
+Define the JSON+binary packet that every later phase reuses: per-body mesh (for now) or Gaussian data (later), particle offsets, masses, inertia diagonals, initial poses, normalization stats, and constants ($\Delta t$, contact radius). Version it.
+
+\step{WebSocket physics server}
+FastAPI + WebSocket: on connect, send the packet; then receive \texttt{\{impulse: body, point, vector\}} messages and stream back per-body poses at 60\,Hz from a continuous model rollout on MPS.
+
+\step{Minimal Three.js client}
+One HTML page: render each body as a colored mesh, orbit controls, update poses from the socket.
+
+\step{Mouse-to-impulse}
+On drag: raycast into the scene, hit-test body bounding boxes, convert drag direction and length into an impulse vector (capped at the training distribution's max), send it. Server encodes it into the action feature $\mathbf{a}^{\text{ext}}$ on the hit body's particles for $K{=}3$ steps with Gaussian falloff from the hit point, exactly matching how impulses were encoded in training data.
+\begin{trap}
+If pokes in the demo feel wrong but Phase 4 videos looked right, the impulse \emph{encoding} mismatch between datagen and server is the culprit almost every time. Unit-test that both code paths produce identical action features for the same nominal poke.
+\end{trap}
+
+\step{Reset and settle behavior}
+Reset button restores the initial packet state. Add the demo-hygiene damping: when a body's kinetic energy stays below a small threshold for ~30 steps, gently zero its velocities to suppress micro-jitter at rest.
+
+\step{Playtest}
+Ten minutes of ruthless play. Note everything that feels off; fix what is cheap now.
+\begin{checkpoint}
+Phase 5 exit: you can knock over a synthetic stack with your mouse on your own machine, it feels responsive, reset works, and objects at rest stay visually still.
+\end{checkpoint}
+
+%--------------------------------------------------------------------
+\section{Phase 6: The Reconstruction Front End}
+%--------------------------------------------------------------------
+
+\step{Capture test photos}
+3--5 \emph{distinctly colored} objects (start with blocks and erasers; add a pencil later), plain matte background, soft even light, slightly elevated camera angle. Take 10 candidate photos.
+
+\step{Background removal}
+\texttt{rembg} on each photo to isolate the object arrangement.
+
+\step{Run single-image reconstruction}
+Start with TripoSR (Hugging Face checkpoint; runs on MPS, if an op fails use the fallback env var or free Colab). It outputs a triplane/mesh; extract the mesh, sample its surface densely with color, and instantiate one small isotropic Gaussian per sample. If quality disappoints, try LGM (native Gaussian output, heavier). Save as \texttt{.ply}.
+\begin{checkpoint}
+Loaded into Rerun as colored points, the reconstruction is recognizably your objects from all sides, hallucinated back included. Judge shape and color separation, not beauty.
+\end{checkpoint}
+
+\step{Gravity alignment and metric scale}
+\texttt{recon/canonicalize.py}: rotate so the support plane normal is $+z$ (RANSAC, next step, can be run first to find it); scale so the largest object dimension is plausible in metric units for its class (assumed, not estimated).
+
+\step{Ground plane via RANSAC}
+Fit a plane to the lowest 30\% of points by $z$; label inliers as static ground. If the reconstruction has no ground (common for single-image), insert a synthetic plane at minimum $z$.
+
+\step{Cluster into objects}
+HDBSCAN on $[\,\boldsymbol{\mu}/\sigma_{xyz} \,\|\, \lambda\,\mathrm{rgb}\,]$ (position normalized, color weighted). Tune $\lambda$ and \texttt{min\_cluster\_size} on your test scene; merge or drop tiny clusters. Log the result to Rerun colored by cluster id.
+\begin{checkpoint}
+Each real object is exactly one cluster, the ground is separate, and floaters are gone. This checkpoint is pure parameter tuning; budget an afternoon.
+\end{checkpoint}
+
+\step{Per-body physical properties}
+Per cluster: convex hull (trimesh), center of mass, oriented bounding box (for picking), mass and inertia diagonal from the hull at assumed density.
+
+\step{Resample physics particles}
+Run \texttt{common/particles.sample\_surface} (the \emph{identical} Phase 1 function) on each cluster's hull surface. Store body-frame offsets. Log to Rerun next to a training-data scene: the two particle clouds should be statistically indistinguishable in spacing and coverage.
+
+\step{Emit a scene packet}
+Wire it all into the Phase 5 packet format (meshes from hulls for now).
+
+\step{End-to-end local test}
+Load the photo-derived packet into the Phase 5 demo. Poke your reconstructed objects.
+\begin{checkpoint}
+Phase 6 exit: a photo from your phone becomes an interactive physics scene on your machine. Expect one round of debugging; scale or gravity-axis mismatches are the usual suspects, and the domain randomization from Step 16 is what absorbs reconstruction lumpiness.
+\end{checkpoint}
+
+%--------------------------------------------------------------------
+\section{Phase 7: Browser Inference and Splat Rendering}
+%--------------------------------------------------------------------
+
+\step{Export the model to ONNX}
+\texttt{export/to\_onnx.py}: export with dynamic (symbolic) node and edge dimensions. The graph builder and integrator are \emph{not} exported; only encode-process-decode is. If the fallback head shipped, note its SVD does not export; the Kabsch step will be TypeScript.
+
+\step{Parity test, Python vs.\ ONNX Runtime}
+Drive both the PyTorch model and the ONNX session with identical inputs over a 100-step rollout (graph building and integration in shared Python).
+\begin{checkpoint}
+Positions agree within $10^{-4}$ over the full rollout. Do not write a line of frontend model code before this passes; debugging numerics through a browser is misery.
+\end{checkpoint}
+
+\step{Scaffold the web app}
+\texttt{npx create-next-app web} with TypeScript; add React Three Fiber, drei, \texttt{onnxruntime-web}, and a splat renderer (GaussianSplats3D or Spark).
+
+\step{TypeScript graph builder and integrator}
+Port the grid-hash neighbor search and the semi-implicit SE(3) integrator. Both are pure functions in Python by design; port them line by line, then run the cross-language parity test: same packet, 100 steps, TS+ONNX vs.\ Python, agreement to $10^{-3}$.
+
+\step{The physics loop in the browser}
+A \texttt{requestAnimationFrame}-decoupled loop: build graph, run the ONNX session (WebGPU provider, WASM-SIMD fallback), integrate, at a fixed 60\,Hz accumulator (or 30\,Hz with render interpolation). Measure per-step time in the console.
+\begin{checkpoint}
+A reconstructed scene (about 1{,}000 particles) steps in single-digit milliseconds and the loop holds rate with the tab in the foreground.
+\end{checkpoint}
+
+\step{Splat rendering with per-body transforms}
+Load the scene's Gaussians grouped by body id; give each body its own splat batch with a model matrix. Per frame, write each body's pose into its matrix: means transform by $(\R_b, \tr_b)$; covariances rotate by quaternion multiplication. The library handles depth-sort refresh.
+\begin{why}
+Per-body batches mean the CPU uploads 6 numbers per body per frame instead of rewriting a 100k-Gaussian buffer. This is what makes 60\,FPS trivial instead of impossible.
+\end{why}
+
+\step{Port interaction}
+OBB raycast picking, drag-to-impulse (same encoding as Phase 5, now computed client-side), gravity and impulse-strength sliders, reset.
+
+\step{The scene endpoint, or static packets}
+Two options: (a) FastAPI on Modal running Phase 6 for user-uploaded photos; (b) precompute packets for several scenes and serve them statically. Ship (b) first: zero cost, zero cold starts, reviewers still get full interactivity on real photo-derived scenes. Add (a) later if desired.
+
+\step{Deploy}
+Vercel Hobby tier. Check the ONNX WASM/WebGPU assets ship correctly (they need specific headers for threading; Vercel config handles it).
+
+\step{Cross-device pass}
+Test Chrome, Safari, Firefox, and a phone. Safari lacks WebGPU in places; confirm the WASM fallback engages and remains fast enough at 30\,Hz.
+\begin{checkpoint}
+Phase 7 exit: a public URL where anyone can orbit and poke your photo-derived objects, with all physics running in their browser.
+\end{checkpoint}
+
+%--------------------------------------------------------------------
+\section{Phase 8: Polish and Writeup}
+%--------------------------------------------------------------------
+
+\step{UI polish}
+Dark theme, a short ``what am I looking at'' overlay explaining that the physics is a learned neural network running locally in the visitor's browser, scene selector, FPS counter.
+
+\step{The demo video}
+60--90 seconds, screen-recorded: the source photo, the reconstruction, then interaction. This is what most people will watch instead of clicking.
+
+\step{README and writeup}
+Architecture diagram, the Phase 4 metrics table, side-by-side videos, honest limitations (from the failure gallery), and pointers to the three ideas that made it work: rigidity by construction, noise injection, and the shared particle sampler. Those three are the story.
+
+\begin{checkpoint}
+Someone who has never spoken to you can open the URL, understand what they are seeing within 30 seconds, knock over your blocks, and find the code and writeup from the page. That is the finish line.
+\end{checkpoint}
+
+%====================================================================
+\section*{Glossary}
+\addcontentsline{toc}{section}{Glossary}
+%====================================================================
+
+\begin{description}[itemsep=2pt]
+  \item[3DGS / splat] Scene format made of colored transparent 3D Gaussians; renders photorealistically in real time.
+  \item[Body frame] Coordinate system attached to an object; particle offsets live here.
+  \item[GNS] Graph Network Simulator; the encode-process-decode GNN recipe for learned physics.
+  \item[HDBSCAN] Density-based clustering that finds a variable number of clusters; used to split the splat cloud into objects.
+  \item[Kabsch] SVD-based algorithm giving the best-fit rotation between two point sets; used to snap predictions back to rigidity in the fallback head.
+  \item[MPS] Metal Performance Shaders; PyTorch's Apple-GPU backend.
+  \item[Noise injection] Training-time corruption of inputs that teaches the model to correct its own rollout errors.
+  \item[ONNX] Portable neural-network file format; ONNX Runtime Web executes it in the browser.
+  \item[Packet] This project's serialized scene bundle: Gaussians, particles, body metadata, constants.
+  \item[RANSAC] Robust fitting by consensus of random minimal subsets; used for the ground plane.
+  \item[Residual dynamics] Learning only what remains after known physics (gravity) is handled analytically.
+  \item[Rollout] Running the one-step model repeatedly on its own predictions.
+  \item[Semi-implicit Euler] Integration scheme: update velocity first, then position with the new velocity.
+  \item[SE(3)] The space of rigid poses (rotation + translation).
+\end{description}
+
+\end{document}
