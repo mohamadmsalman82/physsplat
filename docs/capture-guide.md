@@ -70,6 +70,16 @@ rotating the objects.
 
 Keep the originals at full resolution and do not crop them.
 
+**Optional insurance:** repeat the same 8 arrangements under a second lighting
+condition (window light, then lamp light). Lighting problems are systematic,
+so a second condition protects the whole batch in a way that extra angles of
+one setup cannot. Roughly 40 to 50 photos total if you do this.
+
+These photos are demo scenes, not training data; the model trains purely on
+synthetic simulation. A batch this size exists to yield 3 to 5 good scenes
+for the final demo, with slack for reconstruction failures, and reshooting
+later after we learn what works is cheap and expected.
+
 ## Optional: the high-quality path
 
 For one hero scene, walk a slow circle around it taking **30 to 60 photos of
