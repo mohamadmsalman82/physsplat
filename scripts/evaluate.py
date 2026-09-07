@@ -51,7 +51,7 @@ def main():
 
     agg = {}
     for k in ("trans_50", "trans_150", "trans_294", "rot_50", "rot_150",
-              "rot_294", "penetration"):
+              "rot_294", "axis_50", "axis_150", "axis_294", "penetration"):
         vals = [r[k] for r in rows if k in r]
         if vals:
             agg[k] = float(np.mean(vals))

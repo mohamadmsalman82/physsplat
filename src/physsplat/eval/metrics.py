@@ -91,6 +91,22 @@ def evaluate_trajectory(model, normalizer, d: dict, device: str) -> dict:
         Rg = quat_to_matrix(torch.tensor(d["quat"][H + ck], dtype=torch.float32))
         tr = torch.einsum("bij,bij->b", Rp, Rg).clamp(-1, 3)
         m[f"rot_{ck}"] = float(torch.arccos(((tr - 1) / 2).clamp(-1, 1)).mean())
+        # Symmetry-aware orientation error: a capsule spun about its own long
+        # axis is visually and physically identical, so full SO(3) error
+        # over-penalizes it. For capsules, measure only how far the AXIS
+        # direction drifted (sign-invariant: an axis has no polarity).
+        axis_errs = []
+        for b in range(len(d["mass"])):
+            if d["shape_kind"][b] != 0:
+                continue
+            a, _, _ = capsule_from_offsets(d["offsets_list"][b])
+            ap = Rp[b].numpy() @ a
+            ag = Rg[b].numpy() @ a
+            cosang = abs(float(ap @ ag)) / (
+                np.linalg.norm(ap) * np.linalg.norm(ag))
+            axis_errs.append(float(np.arccos(np.clip(cosang, -1, 1))))
+        if axis_errs:
+            m[f"axis_{ck}"] = float(np.mean(axis_errs))
 
     m["penetration"] = worst_penetration(
         out["pos"], out["quat"], d["offsets_list"], d["shape_kind"])
