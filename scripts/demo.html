@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>PhysSplat Local Demo</title>
+<style>
+  body { margin: 0; background: #14161a; color: #dde; font: 13px system-ui; }
+  #hud { position: fixed; top: 10px; left: 10px; z-index: 2; user-select: none; }
+  #hud b { color: #8cf; }
+  button { background:#2a2e36; color:#dde; border:1px solid #444; border-radius:6px;
+           padding:6px 12px; cursor:pointer; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <b>PhysSplat</b> local demo &mdash; learned physics<br>
+  drag on a pencil = <b>grab</b> (hold), quick flick = <b>poke</b><br>
+  <span id="status">connecting...</span><br><br>
+  <button id="reset">reset scene</button>
+</div>
+<script type="importmap">
+{"imports": {"three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.module.min.js"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14161a);
+const cam = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.01, 10);
+cam.position.set(0.25, -0.3, 0.25); cam.up.set(0,0,1);
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const controls = new OrbitControls(cam, renderer.domElement);
+controls.target.set(0,0,0.02);
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.2); sun.position.set(1,-1,2);
+scene.add(sun);
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(1,1),
+  new THREE.MeshStandardMaterial({color:0x23262c}));
+scene.add(ground);
+
+const COLORS = [0x8c46af, 0xf27321, 0x1a8c8c, 0x738090, 0xcc335a, 0x3359cc, 0x999933];
+let meshes = [], bodies = [];
+
+const ws = new WebSocket(`ws://${location.host}/ws`);
+const status = document.getElementById('status');
+ws.onmessage = (ev) => {
+  const m = JSON.parse(ev.data);
+  if (m.type === 'scene') {
+    bodies = m.bodies;
+    for (const mesh of meshes) scene.remove(mesh);
+    meshes = m.bodies.map((b, i) => {
+      let geo;
+      if (b.kind === 'capsule')
+        geo = new THREE.CapsuleGeometry(b.radius, 2*b.half, 6, 14).rotateX(Math.PI/2);
+      else
+        geo = new THREE.BoxGeometry(...b.extents);
+      const mesh = new THREE.Mesh(geo,
+        new THREE.MeshStandardMaterial({color: COLORS[i % COLORS.length], roughness: 0.55}));
+      scene.add(mesh);
+      return mesh;
+    });
+    status.textContent = `scene: ${m.regime}`;
+  } else if (m.type === 'state') {
+    m.pos.forEach((p, i) => meshes[i].position.set(...p));
+    m.quat.forEach((q, i) => meshes[i].quaternion.set(...q));
+  }
+};
+
+// ---- interaction: raycast, then grab (hold) or poke (flick) ----
+const ray = new THREE.Raycaster();
+let drag = null;   // {body, start:{x,y,t}, planeZ}
+function ndc(e){ return new THREE.Vector2(e.clientX/innerWidth*2-1, -(e.clientY/innerHeight)*2+1); }
+
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  ray.setFromCamera(ndc(e), cam);
+  const hits = ray.intersectObjects(meshes);
+  if (!hits.length) return;
+  controls.enabled = false;
+  const body = meshes.indexOf(hits[0].object);
+  drag = {body, point: hits[0].point, t0: performance.now(),
+          p0: hits[0].point.clone(), moved: false};
+});
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  drag.moved = true;
+  // target: intersection of the view ray with a camera-facing plane
+  // through the grab point (screen-space dragging in 3D)
+  ray.setFromCamera(ndc(e), cam);
+  const n = new THREE.Vector3(); cam.getWorldDirection(n);
+  const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, drag.p0);
+  const target = new THREE.Vector3();
+  ray.ray.intersectPlane(plane, target);
+  drag.target = target;
+  if (performance.now() - drag.t0 > 160)  // held long enough -> grab
+    ws.send(JSON.stringify({type:'grab', body: drag.body,
+      point: drag.point.toArray(), target: target.toArray()}));
+});
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (!drag) { controls.enabled = true; return; }
+  const dt = (performance.now() - drag.t0) / 1000;
+  if (dt < 0.16 && drag.moved && drag.target) {           // flick -> poke
+    const dv = drag.target.clone().sub(drag.p0).multiplyScalar(2.0);
+    ws.send(JSON.stringify({type:'poke', body: drag.body,
+      point: drag.point.toArray(), dv: dv.toArray()}));
+  } else {
+    ws.send(JSON.stringify({type:'release'}));
+  }
+  drag = null; controls.enabled = true;
+});
+document.getElementById('reset').onclick =
+  () => ws.send(JSON.stringify({type:'reset'}));
+
+addEventListener('resize', () => {
+  cam.aspect = innerWidth/innerHeight; cam.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+(function loop(){ requestAnimationFrame(loop); controls.update();
+  renderer.render(scene, cam); })();
+</script>
+</body>
+</html>

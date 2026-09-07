@@ -1,0 +1,2 @@
+time,checkpoint,step,n,trans_50,trans_150,trans_294,rot_50,rot_150,rot_294,penetration,stability
+2026-09-07 14:53,checkpoints/run01/latest.pt,2500,6,0.09928,1.49224,10.20670,1.18262,2.07114,2.17940,16.43416,0.00000
