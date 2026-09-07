@@ -95,13 +95,28 @@ def test_particle_velocities_match_position_differences(data_dir):
     assert err < 0.05, f"velocity/position inconsistency {err:.4f} m/s"
 
 
-def test_noise_and_domain_rand_change_inputs_not_targets(data_dir):
+def test_noise_semantics(data_dir):
+    """GNS-style noise: inputs are perturbed AND targets are recomputed
+    against the perturbed state (so integrating the target from the noisy
+    state lands on the clean truth -- the correction property). With sigma=0
+    everything is deterministic and clean."""
     clean = TrajectoryDataset(data_dir, split="train")
+    clean2 = TrajectoryDataset(data_dir, split="train")
     noisy = TrajectoryDataset(data_dir, split="train", noise_std=0.002, domain_rand=False)
     i = len(clean) // 3
-    a, b = clean[i], noisy[i]
-    assert not torch.equal(a["vel_hist"], b["vel_hist"])
-    assert torch.equal(a["target"], b["target"])
+    a, a2, b = clean[i], clean2[i], noisy[i]
+    assert torch.equal(a["vel_hist"], a2["vel_hist"])       # clean path deterministic
+    assert torch.equal(a["target"], a2["target"])
+    assert not torch.equal(a["vel_hist"], b["vel_hist"])    # noise perturbs inputs
+    assert not torch.equal(a["target"], b["target"])        # ... and targets
+    # correction property, linear part: per body, (noisy mean particle
+    # velocity at t) + target*dt must land on the same true next velocity
+    # as the clean sample's. Mean particle velocity ~ body velocity.
+    for bod in range(a["mass"].shape[0]):
+        sel = a["body_ids"] == bod
+        va = a["vel_hist"][sel, -1].mean(0) + a["target"][bod, :3] * C.DT
+        vb = b["vel_hist"][sel, -1].mean(0) + b["target"][bod, :3] * C.DT
+        assert (va - vb).abs().max() < 0.02, f"correction property broken: {va} vs {vb}"
 
 
 def test_splits_disjoint(data_dir):
