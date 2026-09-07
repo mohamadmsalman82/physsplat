@@ -66,8 +66,31 @@ pipeline. Photos of the actual pencils pending (re-send as JPEG/PNG).
    the clip stops them, and a hull with a bump does something similar.
    Accepted approximation.
 
-## Open until photos arrive
-- Confirm model (Matic Grip vs Xtra-Sparkle vs Color Cues) and whether barrels
-  are translucent -> decides the tape question.
-- Confirm the exact stacking style in the reference photo -> decides regime
-  weights in datagen.
+## Confirmed from reference photos (2026-09-07)
+
+- **Model: BIC Matic Grip 0.7mm HB #2** (printed on the barrel). Datasheet
+  numbers above hold.
+- **Barrels are opaque.** No translucency problem, no tape needed.
+- **The set has duplicates:** at least 2 purple and 2 gray-blue pencils plus
+  orange and teal. Two same-colored pencils must never touch in a demo scene
+  or they merge into one body.
+- **Every pencil wears the same gray rubber grip** covering roughly a quarter
+  of its length, plus a colored tip and eraser. Two consequences:
+  1. The over-segmentation merge pass is mandatory, not precautionary: every
+     single pencil will initially cluster as barrel + grip + tip pieces.
+  2. **The gray-on-gray trap.** The gray pencils' barrels are nearly the same
+     color as the grip that every other pencil wears. Where a gray pencil
+     touches another pencil's grip, neither position nor color marks the
+     boundary, and clustering cannot split them. Collinearity in the merge
+     pass helps only when the two pencils point in different directions.
+     Scene rule: gray pencils go in spread-out arrangements or touch other
+     pencils on their colored barrel sections; the core stacking trio is
+     purple, orange, teal.
+- **The demo arrangement is a loose criss-cross pile**, pencils dropped
+  crossing each other at shallow random angles, not a neat lattice. Datagen
+  gets a matching regime: sequential drops at random yaw over a small area,
+  settling into a tangle. Multi-contact shallow-angle pencil-on-pencil
+  resting is the dominant contact mode to learn.
+- **Framing note:** the reference pile photo has the pencils in the bottom
+  third of a tall frame. For reconstruction input the pencils must fill most
+  of the frame (see capture-guide.md).

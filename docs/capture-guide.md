@@ -47,15 +47,22 @@ scope (everything is simulated as its convex hull).
 
 ## Shooting the BIC pencils (the chosen demo objects)
 
-The demo objects are BIC mechanical pencils in purple, gray, orange, and
-turquoise (full datasheet in `objects.md`). Two pencil-specific rules:
+The demo objects are BIC Matic Grip pencils in purple, gray, orange, and
+turquoise, confirmed opaque (full datasheet in `objects.md`). Rules learned
+from the reference photos:
 
-- **Frame tight.** Thin objects are the hardest case for reconstruction, so
-  the pencils should fill most of the frame, not sit small in a wide shot.
-- **Check for translucency.** Hold a barrel up to the light. If you can see
-  through it, reconstruction will struggle: either pick opaque pencils or
-  wrap each barrel in a distinct color of matte tape (washi or masking tape).
-  Slightly thicker and fully opaque is a double win.
+- **Frame tight.** The reference pile shot had the pencils in the bottom third
+  of the frame with mostly wall above. For reconstruction input, the pencils
+  should fill about 70 percent of the frame. Shoot from higher above the
+  table so the background is table, not wall, and avoid panel seams and
+  table edges behind the scene.
+- **Same-colored pencils must never touch.** The set has two purples and two
+  grays; a touching same-color pair merges into one rigid body.
+- **Keep the gray pencils out of tangles.** Every pencil has the same gray
+  grip, so a gray barrel touching another pencil's grip has no color boundary
+  and cannot be separated. Use purple, orange, and teal as the stacking trio;
+  place gray pencils apart from the pile or touching colored barrel sections
+  only.
 
 ## How many photos
 
