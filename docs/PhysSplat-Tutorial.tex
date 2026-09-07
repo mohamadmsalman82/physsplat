@@ -339,7 +339,7 @@ Parallelize with \texttt{multiprocessing} (one PyBullet \texttt{DIRECT}-mode ins
 Over the training split only, compute mean and standard deviation of: velocity features, acceleration targets (linear and angular, per-body), and edge displacement features. Save to \texttt{data/stats.json}. These exact numbers ship all the way to the browser in Phase 7.
 
 \step{Build the PyTorch \texttt{Dataset}}
-In \texttt{train/dataset.py}, a \texttt{\_\_getitem\_\_} that picks a trajectory and frame $t \geq 5$ and returns: world particle positions at $t$, the 5-step velocity history (finite differences of positions), body ids, per-body mass/inertia, the impulse channel at $t$, and the \emph{target}: each body's actual linear and angular acceleration from $t$ to $t{+}1$ minus gravity (the residual the network must learn). Apply the domain-randomization corruptions here with a flag: 0.5--2\,mm surface noise on offsets, random 5--15\% particle dropout.
+In \texttt{train/dataset.py}, a \texttt{\_\_getitem\_\_} that picks a trajectory and frame $t \geq 5$ and returns: world particle positions at $t$, the 5-step velocity history (finite differences of positions), body ids, per-body mass/inertia, the impulse channel at $t$, and the \emph{target}: each body's actual linear and angular acceleration from $t$ to $t{+}1$ minus gravity and minus the applied external force's analytic Newton--Euler contribution (force over mass, plus the torque from its application point), leaving the pure contact-and-friction residual the network must learn. Apply the domain-randomization corruptions here with a flag: 0.5--2\,mm surface noise on offsets, random 5--15\% particle dropout.
 \begin{checkpoint}
 A quick script draws 100 samples, checks shapes and dtypes (all float32), checks targets are finite, and histograms the normalized targets: roughly zero-mean, unit-variance, heavy-tailed (contact spikes). If the histogram is not centered, your gravity subtraction or normalization is wrong.
 \end{checkpoint}
@@ -383,7 +383,7 @@ The per-body head is the primary design (rigidity is exact, output is tiny). But
 \end{why}
 
 \step{The integrator}
-In \texttt{model/integrator.py}: denormalize predictions, add gravity, semi-implicit Euler per body, rotation update via rotation-vector exponential, then particles from body poses. Keep it a pure function of (state, prediction) $\rightarrow$ state; Phase 7 reimplements it in TypeScript and purity makes the two easy to compare.
+In \texttt{model/integrator.py}: denormalize predictions, add gravity and the applied external force's analytic Newton--Euler terms ($\mathbf{F}/m$ on the linear side, $\mathbf{I}^{-1}(\mathbf{r} \times \mathbf{F})$ from the grab point on the angular side), semi-implicit Euler per body, rotation update via rotation-vector exponential, then particles from body poses. The analytic force terms are what guarantee grab physics by construction: off-center grabs lean, end grabs dangle, releases free-fall exactly. Keep it a pure function of (state, prediction) $\rightarrow$ state; Phase 7 reimplements it in TypeScript and purity makes the two easy to compare.
 
 \step{Assemble the one-step model and overfit a single trajectory}
 Wire encode $\rightarrow$ process $\rightarrow$ decode into one module. Then the most diagnostic experiment of the project: train on \emph{one} trajectory until the loss approaches zero.

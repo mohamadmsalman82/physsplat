@@ -18,7 +18,9 @@ GRAVITY = 9.81           # m/s^2, acting along -z (z is up everywhere)
 # Mass and inertia are model input features, so the network handles the range.
 DENSITY_RANGE = (400.0, 900.0)   # kg/m^3
 FRICTION_RANGE = (0.2, 0.9)      # smooth plastic barrel .. rubber grip
-RESTITUTION_RANGE = (0.0, 0.4)
+# Hard plastic on a hard desk bounces visibly; excluding dead-thud materials
+# keeps the learned bounce crisp instead of averaged toward mush.
+RESTITUTION_RANGE = (0.1, 0.5)
 
 # --- Particles / graph ---------------------------------------------------
 PARTICLE_SPACING = 0.004                 # target surface-sample spacing (m)
