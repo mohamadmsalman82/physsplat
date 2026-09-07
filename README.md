@@ -84,6 +84,24 @@ CFLAGS="-Dfdopen=fdopen -Wno-error=implicit-function-declaration -Wno-error=inco
 uv caches the built wheel, so this is a once-per-machine fix.
 </details>
 
+<details>
+<summary>Note: developing inside an iCloud-synced folder</summary>
+
+iCloud's "Optimize Mac Storage" evicts file contents under `~/Desktop`,
+replacing them with dataless stubs, and flags files hidden. Two concrete
+failures this caused: Python 3.12 silently skips hidden `.pth` files (the
+project vanished from `sys.path`), and cold imports took 60+ seconds while
+evicted libraries re-downloaded. Mitigations in place:
+
+- the real venv lives in `.venv.nosync/` (iCloud never syncs `*.nosync`),
+  with `.venv` a symlink to it; `uv sync` works through the symlink
+- large generated data goes to `data/raw.nosync/` for the same reason
+
+If imports get slow or modules go missing, check for eviction:
+`find <dir> -type f -flags +dataless | wc -l`. The durable fix is moving the
+repo off the synced Desktop or disabling Desktop sync in iCloud settings.
+</details>
+
 ## License
 
 [MIT](LICENSE)

@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .venv/
+.venv.nosync/
 
 # Generated artifacts (large, reproducible)
 data/*

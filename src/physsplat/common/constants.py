@@ -29,4 +29,25 @@ MAX_PARTICLES_PER_BODY = 400             # cap for very large objects
 HISTORY = 5                              # velocity-history length fed to model
 
 # --- Interaction ---------------------------------------------------------
-IMPULSE_STEPS = 3        # steps over which a user poke is applied
+IMPULSE_STEPS = 3        # recorded steps over which a user poke is applied
+POKE_DELTA_V = (0.05, 0.30)   # poke strength as target velocity change (m/s)
+
+# Grab = spring-damper from grab point to mouse/scripted target. Gains scale
+# with body mass so a pencil and a heavy box feel the same: kp = m*omega^2,
+# kd = 2*zeta*m*omega. Force capped at GRAB_FORCE_CAP * m * g.
+GRAB_OMEGA = 12.6        # rad/s (~2 Hz spring)
+GRAB_ZETA = 0.9          # near-critical damping -> dangles settle, not ring
+GRAB_FORCE_CAP = 3.0     # x (m*g)
+# Keep relative speeds inside the contact-sensing (tunneling) budget:
+# CONTACT_RADIUS / DT = 0.36 m/s. Predictive edges extend it; caps respect it.
+TARGET_SPEED_MAX = 0.25  # m/s, max grab-target speed
+
+# --- Scene bounds (rejection filters) ------------------------------------
+SCENE_XY_MAX = 0.8       # m; a body beyond this has escaped -> reject
+SCENE_Z_MAX = 0.5        # m
+# Penetration filter: a one-frame spike during an impact is real compliance;
+# chronic overlap is bad ground truth. Reject on sustained depth (95th
+# percentile over frames) or an extreme spike.
+PENETRATION_SUSTAINED = 0.0015   # m, 95th percentile across frames
+PENETRATION_SPIKE = 0.005        # m, absolute max
+SPEED_REJECT = 3.0       # m/s; faster than this means the sim exploded
