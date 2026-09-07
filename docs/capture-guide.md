@@ -1,116 +1,103 @@
-# Capture guide
+# Capture guide: the full photo campaign
 
-How to photograph a scene that reconstructs well. Pull this up on your phone
-while shooting.
+The demo objects are BIC Matic Grip pencils (opaque, confirmed): purple x2,
+gray-blue x2, orange, teal. Full datasheet in `objects.md`.
 
-## What to use
+**Total: ~260 photos in 5 sets, about 3 hours.** Each set answers a specific
+question. Shoot them in order; folder names below.
 
-Three to five objects. Good choices: wooden blocks, Duplo or Lego bricks,
-erasers, dice, small boxes, chunky markers, highlighters, a thick pencil.
+## Ground rules (apply to every shot)
 
-### The color rule
+- Soft even light, no direct sun, no harsh shadows. Don't shadow the scene
+  with your own body.
+- Tap to focus on the pencils. Hold steady. No zoom, move your feet instead.
+- Pencils fill ~70% of the frame. Background is table, not wall. Keep panel
+  seams and table edges out from behind the scene.
+- Same-colored pencils never touch (two purples, two grays: keep pairs apart).
+- Gray pencils stay out of tangles except where the stress set says otherwise.
+- HEIC straight off the iPhone is fine for files on disk; AirDrop originals
+  into the folders below and they get converted during processing.
 
-**Only objects that touch each other need different colors.** Objects sitting
-apart are separated by position alone, so two identical red blocks a few
-centimetres apart are fine.
+## Set A: Calibration singles (~20 photos, 15 min)
 
-The reason: the pipeline splits the scene into objects by clustering on
-position *and* color. Where two objects touch, position runs continuously
-across the contact seam, and color is the only thing that marks the boundary.
-Two same-colored blocks stacked directly on each other merge into one body and
-will then move glued together when you poke either one.
+Folder: `data/photos/A_calibration/`
+Unit tests for reconstruction, scale, and color clustering.
 
-In practice that means you need roughly three distinct colors, not five. In a
-five-object scene you can reuse a color as long as the two never touch.
+1. Each color alone on the white desk, 2 angles each (8 photos)
+2. One pencil beside a ruler or tape measure, 2 shots (metric scale check)
+3. Minimal two-pencil contacts with purple + orange: X cross, parallel
+   touching, one leaning on the other; 2 angles each (6 photos)
+4. One gray pencil and one purple pencil on a dark matte background
+   (dark poster board, dark cloth, or dark desk), 2 shots each (4 photos)
 
-"Different" means easily distinguishable, in brightness as well as hue. Red
-against blue is safe. Red against orange, or two shades of natural wood, is
-risky. Also keep the objects contrasting against the background, since
-background removal runs before anything else.
+## Set B: Core demo arrangements (~60 photos, 45 min)
 
-**Avoid:** anything transparent or glassy, glossy or metallic, pure black or
-white, very thin or wiry, and anything concave like a mug or a cup. All four
-break the reconstruction stage, and concave shapes are outside the physics
-scope (everything is simulated as its convex hull).
+Folder: `data/photos/B_core/`
+The demo scene candidates. **12 arrangements x 5 angles = 60 photos.**
 
-## Setup
+The five angles per arrangement: three elevations (about 30, 45, 60 degrees
+above the table) from one side, one shot from a different side at 45, and
+one closer detail shot.
 
-- **Background:** plain and matte. A sheet of white poster board, a clean desk,
-  or a plain-colored towel. No patterns, no clutter, no visible edges of other
-  objects.
-- **Light:** soft and even. Near a window on an overcast day is close to ideal.
-  Avoid direct sun and overhead spotlights. You want minimal hard shadow and no
-  blown-out highlights.
-- **Camera:** phone is fine. Hold it 30 to 45 degrees above the table, not
-  straight down and not at table level. Get the whole arrangement in frame with
-  some margin around it. Tap to focus. Keep it steady.
+1. Three pencils parallel, not touching
+2. Three parallel touching (raft)
+3. Four-pencil raft
+4. Crosshatch: 2 + 2 across them (# shape)
+5. Log cabin: three layers of 2 (use 6 pencils; keep the two purples and two
+   grays in non-touching positions)
+6. Groove pyramid: 2 parallel touching + 1 resting in the valley
+7. Bigger pyramid: 3 + 2
+8. X lean: one pencil across another
+9. Lean cluster: three pencils leaning against each other at angles
+10. Loose criss-cross pile of 4 (purple, orange, teal + one more)
+11. Loose criss-cross pile of 5-6 (the reference-photo style)
+12. Your intended showcase arrangement, exactly as you want it in the demo
 
-## Shooting the BIC pencils (the chosen demo objects)
+## Set C: Lighting and background variation (~24 photos, 20 min)
 
-The demo objects are BIC Matic Grip pencils in purple, gray, orange, and
-turquoise, confirmed opaque (full datasheet in `objects.md`). Rules learned
-from the reference photos:
+Folder: `data/photos/C_variation/`
+Measures how much conditions matter, so the best setup is chosen on evidence.
 
-- **Frame tight.** The reference pile shot had the pencils in the bottom third
-  of the frame with mostly wall above. For reconstruction input, the pencils
-  should fill about 70 percent of the frame. Shoot from higher above the
-  table so the background is table, not wall, and avoid panel seams and
-  table edges behind the scene.
-- **Same-colored pencils must never touch.** The set has two purples and two
-  grays; a touching same-color pair merges into one rigid body.
-- **Keep the gray pencils out of tangles.** Every pencil has the same gray
-  grip, so a gray barrel touching another pencil's grip has no color boundary
-  and cannot be separated. Use purple, orange, and teal as the stacking trio;
-  place gray pencils apart from the pile or touching colored barrel sections
-  only.
+Re-shoot arrangements 2, 4, 6, and 11 from Set B:
+- under a second light source (if Set B was window light, use lamp light),
+  3 angles each (12 photos)
+- on the dark background, original lighting, 3 angles each (12 photos)
 
-## How many photos
+## Set D: Stress set (~15 photos, 15 min)
 
-**Set up these 8 arrangements, and shoot each one from 2 or 3 angles.**
-That is roughly 20 to 25 photos total, and about 30 to 45 minutes of work.
+Folder: `data/photos/D_stress/`
+Deliberately hard shots that probe predicted failure modes. These are
+expected to fail; they map the boundary the demo must stay inside.
 
-The arrangements:
+1. A gray pencil resting directly on another pencil's gray grip, 2 angles
+2. The two purple pencils touching, 2 angles
+3. Dense tangle of all 6-7 pencils, 3 angles
+4. The tallest, most precarious stack you can balance, 2 angles
+5. One extreme close-up of a pile, one wide shot with the pile small in
+   frame (like the original reference photo, for a framing comparison)
+6. Two or three chunky non-pencil objects (eraser, block, die) in one shot,
+   2 angles: the insurance objects
 
-1. Three pencils parallel on the table, not touching
-2. Three pencils parallel and touching, like a raft
-3. A crosshatch stack: two parallel pencils, two more across them (# shape)
-4. A three-layer crosshatch (log-cabin style)
-5. A groove pyramid: two parallel touching pencils with one resting in the
-   valley between them
-6. Pencils scattered at random angles, flat on the table
-7. One pencil leaning across another (X shape)
-8. All four pencils in your intended demo stack (the arrangement from your
-   reference photo)
+## Set E: Multi-view orbits (3 scenes x ~45 photos, ~60 min)
 
-Each photo is an independent candidate scene, because the reconstruction runs
-from a single image. Multiple angles of the same arrangement cost nothing and
-matter more than you'd expect: reconstruction quality varies a lot with
-viewpoint, so shooting one arrangement three ways gives three chances at a
-good result from one setup. Move around the table between shots rather than
-rotating the objects.
+Folders: `data/photos/E_orbit_pile/`, `E_orbit_pyramid/`, `E_orbit_raft/`
+Hero-quality reconstruction, and ground truth for scoring the single-image
+path (same scene, one photo vs. many).
 
-Keep the originals at full resolution and do not crop them.
+Scenes: (1) the showcase criss-cross pile, (2) a groove pyramid, (3) a raft
+with one pencil leaning on it.
 
-**Optional insurance:** repeat the same 8 arrangements under a second lighting
-condition (window light, then lamp light). Lighting problems are systematic,
-so a second condition protects the whole batch in a way that extra angles of
-one setup cannot. Roughly 40 to 50 photos total if you do this.
+For each scene, without touching the arrangement:
+- Walk a full circle at roughly 10-degree steps, camera ~45 degrees above
+  the table: ~36 photos
+- A second partial pass higher up (~60 degrees), every ~30 degrees: ~9 photos
+- 3 closer detail shots
 
-These photos are demo scenes, not training data; the model trains purely on
-synthetic simulation. A batch this size exists to yield 3 to 5 good scenes
-for the final demo, with slack for reconstruction failures, and reshooting
-later after we learn what works is cheap and expected.
+Stills, not video. Keep the whole scene in every frame, keep exposure
+consistent (lock it if you know how), and prioritize sharpness: pause,
+steady, shoot.
 
-## Optional: the high-quality path
+## After shooting
 
-For one hero scene, walk a slow circle around it taking **30 to 60 photos of
-that single arrangement**, keeping the objects untouched and the whole scene in
-frame each time. Step maybe 10 degrees between shots and vary your height a
-little. This produces a much better reconstruction than any single photo.
-
-Worth doing once, later, for the demo video. Not needed now.
-
-## Where to put them
-
-Drop the files in `data/photos/` in this repo. They are gitignored, so nothing
-large gets committed. Name them anything.
+Drop everything into the folders above (they are gitignored) and say the
+photos are in. Processing order is A first (pipeline unit tests), then B.
