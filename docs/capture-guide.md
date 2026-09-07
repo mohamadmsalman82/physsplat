@@ -45,6 +45,18 @@ scope (everything is simulated as its convex hull).
   straight down and not at table level. Get the whole arrangement in frame with
   some margin around it. Tap to focus. Keep it steady.
 
+## Shooting the BIC pencils (the chosen demo objects)
+
+The demo objects are BIC mechanical pencils in purple, gray, orange, and
+turquoise (full datasheet in `objects.md`). Two pencil-specific rules:
+
+- **Frame tight.** Thin objects are the hardest case for reconstruction, so
+  the pencils should fill most of the frame, not sit small in a wide shot.
+- **Check for translucency.** Hold a barrel up to the light. If you can see
+  through it, reconstruction will struggle: either pick opaque pencils or
+  wrap each barrel in a distinct color of matte tape (washi or masking tape).
+  Slightly thicker and fully opaque is a double win.
+
 ## How many photos
 
 **Set up these 8 arrangements, and shoot each one from 2 or 3 angles.**
@@ -52,14 +64,16 @@ That is roughly 20 to 25 photos total, and about 30 to 45 minutes of work.
 
 The arrangements:
 
-1. Three objects in a loose row, not touching
-2. Same three, touching side by side
-3. A two-object stack
-4. A three-object stack
-5. A stack with something leaning against it
-6. Objects scattered flat, including a pencil lying down
-7. A tall precarious stack
-8. Four to five objects clustered together
+1. Three pencils parallel on the table, not touching
+2. Three pencils parallel and touching, like a raft
+3. A crosshatch stack: two parallel pencils, two more across them (# shape)
+4. A three-layer crosshatch (log-cabin style)
+5. A groove pyramid: two parallel touching pencils with one resting in the
+   valley between them
+6. Pencils scattered at random angles, flat on the table
+7. One pencil leaning across another (X shape)
+8. All four pencils in your intended demo stack (the arrangement from your
+   reference photo)
 
 Each photo is an independent candidate scene, because the reconstruction runs
 from a single image. Multiple angles of the same arrangement cost nothing and

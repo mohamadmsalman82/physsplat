@@ -13,7 +13,12 @@ SETTLE_STEPS = 100       # settle period before recording starts
 
 # --- Physics -------------------------------------------------------------
 GRAVITY = 9.81           # m/s^2, acting along -z (z is up everywhere)
-DENSITY = 800.0          # kg/m^3, fixed for all objects (mass follows volume)
+# Randomized per body at datagen time. Range covers hollow plastic pencils
+# (~530 kg/m^3 effective, see docs/objects.md) through solid wood/plastic.
+# Mass and inertia are model input features, so the network handles the range.
+DENSITY_RANGE = (400.0, 900.0)   # kg/m^3
+FRICTION_RANGE = (0.2, 0.9)      # smooth plastic barrel .. rubber grip
+RESTITUTION_RANGE = (0.0, 0.4)
 
 # --- Particles / graph ---------------------------------------------------
 PARTICLE_SPACING = 0.004                 # target surface-sample spacing (m)
