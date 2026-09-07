@@ -29,7 +29,7 @@ Training data is manufactured, not collected: PyBullet simulates thousands of ra
 Early development, built in phases (each ends with a runnable artifact):
 
 - [x] **Phase 0** — environment, package skeleton, shared constants
-- [ ] **Phase 1** — synthetic dataset generator (PyBullet → HDF5)
+- [x] **Phase 1** — synthetic dataset generator (PyBullet → HDF5): 5,000 trajectories across 7 scene regimes with a poke-and-grab action channel, physics-invariant rejection filters, and visual audit tooling
 - [ ] **Phase 2** — the graph network simulator
 - [ ] **Phase 3** — training (Apple Silicon / MPS)
 - [ ] **Phase 4** — rollout evaluation + side-by-side videos

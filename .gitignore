@@ -7,6 +7,9 @@ __pycache__/
 # Generated artifacts (large, reproducible)
 data/*
 !data/.gitkeep
+# normalization stats ship with checkpoints; a checkpoint without its stats
+# is meaningless, so these ARE tracked
+!data/stats.json
 checkpoints/*
 !checkpoints/.gitkeep
 
