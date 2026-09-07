@@ -30,10 +30,10 @@ Early development, built in phases (each ends with a runnable artifact):
 
 - [x] **Phase 0** — environment, package skeleton, shared constants
 - [x] **Phase 1** — synthetic dataset generator (PyBullet → HDF5): 5,000 trajectories across 7 scene regimes with a poke-and-grab action channel, physics-invariant rejection filters, and visual audit tooling
-- [ ] **Phase 2** — the graph network simulator
-- [ ] **Phase 3** — training (Apple Silicon / MPS)
-- [ ] **Phase 4** — rollout evaluation + side-by-side videos
-- [ ] **Phase 5** — local interactive demo
+- [x] **Phase 2** — the graph network simulator: predictive-edge contact graphs, per-body rigid decoder, analytic Newton-Euler integration, overfit gate passed
+- [ ] **Phase 3** — training (Apple Silicon / MPS): *in progress, 300k steps running; rollout drift at 50 steps already down to 1cm by step 10k*
+- [ ] **Phase 4** — rollout evaluation + side-by-side videos: *harness built, tracking eval/history.csv across checkpoints*
+- [ ] **Phase 5** — local interactive demo: *server + client built, awaiting trained model*
 - [ ] **Phase 6** — photo → scene reconstruction pipeline
 - [ ] **Phase 7** — in-browser inference (ONNX Runtime Web) + splat rendering
 - [ ] **Phase 8** — public deployment
