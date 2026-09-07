@@ -27,9 +27,22 @@ from ..model.rollout import rollout
 from .dataset import TrajectoryDataset
 
 
+NODE_BUCKET = 512
+EDGE_BUCKET = 4096
+
+
+def _bucket(n: int, size: int) -> int:
+    return max(1, -(-n // size)) * size
+
+
 def collate(items: list[dict]) -> dict:
-    """Concatenate scenes into one disjoint graph; build edges per scene."""
-    out, node_off, body_off = {}, 0, 0
+    """Concatenate scenes into one disjoint graph, then PAD nodes/edges up to
+    bucket multiples. MPS compiles and caches kernels per tensor shape, so
+    continuously varying graph sizes make it grow its cache without bound and
+    throughput decays (observed: 9 -> 3 steps/s within 2k steps). Padding
+    lands on one dummy body whose target row is masked out of the loss;
+    padded edges connect dummy nodes to themselves, touching no real node."""
+    out, node_off = {}, 0
     senders, receivers, edge_f = [], [], []
     for it in items:
         parts = it["particles"].numpy()
@@ -39,8 +52,7 @@ def collate(items: list[dict]) -> dict:
         receivers.append(torch.from_numpy(r + node_off))
         edge_f.append(torch.from_numpy(edge_features(parts, s, r, bids)))
         node_off += len(parts)
-        body_off += len(it["mass"])
-    n_off, b_off = 0, 0
+    b_off = 0
     for key in ("particles", "vel_hist", "dist_ground", "a_ext",
                 "mass", "inertia", "quat", "target"):
         out[key] = torch.cat([it[key] for it in items])
@@ -48,12 +60,38 @@ def collate(items: list[dict]) -> dict:
     for it in items:
         bids.append(it["body_ids"] + b_off)
         b_off += len(it["mass"])
-        n_off += len(it["particles"])
     out["body_ids"] = torch.cat(bids)
     out["senders"] = torch.cat(senders)
     out["receivers"] = torch.cat(receivers)
     out["edge_feats"] = torch.cat(edge_f)
-    out["n_bodies"] = b_off
+
+    # ---- pad to shape buckets (dummy body index b_off) ----
+    # N+1 guarantees at least one dummy node so padded edges never touch a
+    # real node (a zero-feature edge still emits a nonzero MLP message)
+    N, E = len(out["particles"]), len(out["senders"])
+    N_pad, E_pad = _bucket(N + 1, NODE_BUCKET), _bucket(E, EDGE_BUCKET)
+    n_extra, e_extra = N_pad - N, E_pad - E
+    if n_extra:
+        out["particles"] = torch.cat([out["particles"], torch.zeros(n_extra, 3)])
+        out["vel_hist"] = torch.cat(
+            [out["vel_hist"], torch.zeros(n_extra, out["vel_hist"].shape[1], 3)])
+        out["dist_ground"] = torch.cat([out["dist_ground"], torch.zeros(n_extra)])
+        out["a_ext"] = torch.cat([out["a_ext"], torch.zeros(n_extra, 3)])
+        out["body_ids"] = torch.cat(
+            [out["body_ids"], torch.full((n_extra,), b_off, dtype=torch.long)])
+    # dummy body row (mass/inertia must be valid for log-normalization)
+    out["mass"] = torch.cat([out["mass"], torch.tensor([0.01])])
+    out["inertia"] = torch.cat([out["inertia"], torch.full((1, 3), 1e-6)])
+    out["quat"] = torch.cat([out["quat"], torch.tensor([[0.0, 0, 0, 1]])])
+    out["target"] = torch.cat([out["target"], torch.zeros(1, 6)])
+    if e_extra:
+        idx = torch.full((e_extra,), N, dtype=torch.long)  # first dummy node
+        out["senders"] = torch.cat([out["senders"], idx])
+        out["receivers"] = torch.cat([out["receivers"], idx])
+        out["edge_feats"] = torch.cat(
+            [out["edge_feats"], torch.zeros(e_extra, out["edge_feats"].shape[1])])
+    out["n_bodies"] = b_off + 1
+    out["loss_mask"] = torch.cat([torch.ones(b_off), torch.zeros(1)])
     return out
 
 
@@ -161,8 +199,10 @@ def train(
                 batch["n_bodies"],
                 normalizer.body_scalars(batch["mass"], batch["inertia"]))
             tgt = normalizer.norm_target(batch["target"])
-            lin_loss = torch.nn.functional.mse_loss(pred[:, :3], tgt[:, :3])
-            ang_loss = torch.nn.functional.mse_loss(pred[:, 3:], tgt[:, 3:])
+            mask = batch["loss_mask"]
+            per_row = lambda a, b: ((a - b) ** 2).mean(1)
+            lin_loss = (per_row(pred[:, :3], tgt[:, :3]) * mask).sum() / mask.sum()
+            ang_loss = (per_row(pred[:, 3:], tgt[:, 3:]) * mask).sum() / mask.sum()
             loss = lin_loss + ang_loss
             opt.zero_grad(set_to_none=True)
             loss.backward()

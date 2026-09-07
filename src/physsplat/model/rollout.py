@@ -37,10 +37,17 @@ def rollout(
                for o in scene["offsets_list"]]
     counts = np.array([len(o) for o in offsets])
     body_ids_np = np.repeat(np.arange(B), counts)
-    body_ids = torch.tensor(body_ids_np, device=device)
-    mass = torch.tensor(scene["mass"], dtype=torch.float32, device=device)
-    inertia = torch.tensor(scene["inertia"], dtype=torch.float32, device=device)
+    # one permanent dummy node + dummy body: edge counts vary per step, and
+    # MPS recompiles kernels per shape, so edges are padded to buckets with
+    # self-edges on the dummy node (same trick as the training collate)
+    body_ids = torch.tensor(
+        np.concatenate([body_ids_np, [B]]), device=device)
+    mass = torch.cat([torch.tensor(scene["mass"], dtype=torch.float32),
+                      torch.tensor([0.01])]).to(device)
+    inertia = torch.cat([torch.tensor(scene["inertia"], dtype=torch.float32),
+                         torch.full((1, 3), 1e-6)]).to(device)
     body_scalars = normalizer.body_scalars(mass, inertia)
+    EDGE_BUCKET = 4096
 
     pos = torch.tensor(init["pos"][-1], dtype=torch.float32, device=device)
     quat = torch.tensor(init["quat"][-1], dtype=torch.float32, device=device)
@@ -77,7 +84,7 @@ def rollout(
                                      device=device)
             act_force = torch.tensor(actions["act_force"][t], dtype=torch.float32,
                                      device=device)
-            sel = body_ids == act_body
+            sel = body_ids[:-1] == act_body      # exclude the dummy node
             feat = action_feature(
                 parts[sel].cpu().numpy(), act_point.cpu().numpy(),
                 act_force.cpu().numpy(), float(mass[act_body]))
@@ -86,20 +93,31 @@ def rollout(
         parts_np = parts.cpu().numpy()
         senders_np, receivers_np = build_edges(
             parts_np, vel_hist[:, -1].cpu().numpy(), body_ids_np)
+        ef_np = edge_features(parts_np, senders_np, receivers_np, body_ids_np)
+        E = len(senders_np)
+        E_pad = max(1, -(-(E) // EDGE_BUCKET)) * EDGE_BUCKET
+        N = len(parts_np)                       # dummy node index
+        pad = np.full(E_pad - E, N, np.int64)
+        senders = torch.tensor(np.concatenate([senders_np, pad]), device=device)
+        receivers = torch.tensor(np.concatenate([receivers_np, pad]), device=device)
         ef = torch.tensor(
-            edge_features(parts_np, senders_np, receivers_np, body_ids_np),
+            np.concatenate([ef_np, np.zeros((E_pad - E, ef_np.shape[1]), np.float32)]),
             device=device)
-        senders = torch.tensor(senders_np, device=device)
-        receivers = torch.tensor(receivers_np, device=device)
 
+        zero3 = torch.zeros(1, 3, device=device)
         batch = {
-            "particles": parts, "vel_hist": vel_hist, "body_ids": body_ids,
-            "dist_ground": parts[:, 2].clamp(0, C.CONTACT_RADIUS),
-            "a_ext": a_ext, "mass": mass, "inertia": inertia,
+            "particles": torch.cat([parts, zero3]),
+            "vel_hist": torch.cat(
+                [vel_hist, torch.zeros(1, C.HISTORY, 3, device=device)]),
+            "body_ids": body_ids,
+            "dist_ground": torch.cat(
+                [parts[:, 2].clamp(0, C.CONTACT_RADIUS), zero3[:, 0]]),
+            "a_ext": torch.cat([a_ext, zero3]),
+            "mass": mass, "inertia": inertia,
         }
         pred = model(normalizer.node_features(batch), ef, senders, receivers,
-                     body_ids, B, body_scalars)
-        residual = normalizer.denorm_target(pred)
+                     body_ids, B + 1, body_scalars)
+        residual = normalizer.denorm_target(pred[:B])
 
         ext_lin, ext_ang = external_accels(
             pos, quat, mass, inertia, act_body, act_point, act_force)
