@@ -151,7 +151,7 @@ Nodes are the physics particles. Edges connect pairs within a contact radius:
 \begin{equation}
 \mathcal{E}_t = \{(i,j) : \lVert \x_i - \x_j \rVert < r_{\text{contact}},\; i \neq j\},
 \end{equation}
-with $r_{\text{contact}}$ about 1.5$\times$ the particle spacing. Same-body edges propagate information across a body; cross-body edges carry contact, and an edge feature flags which kind each edge is. Neighbor search uses a uniform grid hash, $O(N)$ per step.
+with $r_{\text{contact}}$ about 1.5$\times$ the particle spacing. Same-body edges propagate information across a body; cross-body edges carry contact, and an edge feature flags which kind each edge is. Neighbor search uses a uniform grid hash, $O(N)$ per step. Edges are formed from the union of current and velocity-extrapolated positions ($\x + \vv\,\Delta t$), so a fast approach is sensed one step early instead of crossing the sensing shell unnoticed between steps; training-time graphs are built with the identical rule so there is no train/inference mismatch.
 
 \subsection{Input features and normalization}
 Per-node input:
@@ -190,6 +190,9 @@ Semi-implicit Euler per body, with gravity added analytically so the network onl
 \end{align}
 and particle positions follow: $\x_i^{t+1} = \R_b^{t+1} \mathbf{r}_i + \tr_b^{t+1}$.
 
+\subsection{Non-penetration in a constraint-free model}
+A learned simulator has no hard collision constraint, so three stacked mechanisms keep bodies from passing through each other. First, the data and the noise: ground truth contains essentially no interpenetration, and training-noise injection deliberately produces slightly overlapping input states whose clean targets push apart, teaching active penetration \emph{recovery} rather than mere avoidance. Second, a speed budget: contact is sensed only within $r_{\text{contact}}$, so relative motion faster than roughly $r_{\text{contact}}/\Delta t \approx 0.36$\,m/s can cross the sensing shell between steps; the predictive edges above extend this budget, data generation runs PyBullet at 240\,Hz internally so ground truth itself never tunnels, and at inference user force and grab-speed caps keep relative speeds inside the budget (0.36\,m/s is already fast across a 15\,cm scene). Third, an analytic guard: every demo body is a capsule, and capsule-capsule overlap is a closed-form segment-segment distance test, so after each learned step a position-based projection resolves residual overlaps among the $\sim$15 body pairs and against the ground plane at negligible cost. The guard exists to clean up millimetres, not to do the physics: evaluation records \emph{pre-guard} penetration, and a model that leans on the guard fails the scorecard.
+
 \subsection{The shape-matching fallback}
 If the per-body head underfits (pooling discards where on the body contact happened), a fallback decoder predicts per-particle accelerations as in classic GNS, integrates particles freely, then snaps each body back to rigidity via the Kabsch projection: with predicted positions $\tilde{\x}_i$ and offsets $\mathbf{r}_i$,
 \begin{equation}
@@ -219,7 +222,7 @@ A Three.js / React Three Fiber scene using an existing 3DGS splatting library (G
 
 \subsection{Interaction}
 \label{sec:interaction}
-Mouse down casts a ray tested against per-body OBBs from Stage B. A hit turns the drag vector into an impulse: direction in the camera plane, magnitude from drag length, capped to the training distribution's maximum. The impulse enters the next $K\approx3$ physics steps as $\mathbf{a}_i^{\text{ext}}$ on the hit body's particles, weighted by Gaussian falloff from the hit point, so poking a corner produces spin. Sliders for gravity scale and impulse strength, and a reset button (free, since the initial state is just the Stage C packet).
+Mouse down casts a ray tested against per-body OBBs from Stage B. Two modes share one mechanism. A quick drag-release is a \emph{poke}: a short force burst in the drag direction. Press-and-hold is a \emph{grab}: a spring-damper attaches between the grab point and the mouse target, $\mathbf{f} = k_p(\x_{\text{target}} - \x_{\text{grab}}) - k_d\,\vv_{\text{grab}}$, applied every step until release, with the same gains used in data generation. Both enter the network as the per-particle channel $\mathbf{a}_i^{\text{ext}}$, weighted by Gaussian falloff from the application point, so grabbing an end produces realistic pivoting. Forces and target speeds are capped to the training distribution's maxima, which also keeps relative speeds inside the tunneling budget. Sliders for gravity scale and impulse strength, and a reset button (free, since the initial state is just the Stage C packet).
 
 %=====================================================================
 \section{Synthetic Training Data}
@@ -233,7 +236,7 @@ Each trajectory:
 \begin{itemize}[itemsep=2pt]
   \item 2 to 6 objects drawn from a randomized \emph{primitive-shape family}: boxes (erasers, blocks), cylinders and capsules (pencils, markers, batteries), and random convex polyhedra. Longest dimension 2 to 16\,cm, aspect ratios up to 15:1 to cover pencil-like shapes; friction $\mu \in [0.2, 0.9]$ (smooth plastic barrels sit near the low end, rubber grips near the high end); restitution $\in [0.0, 0.4]$; density randomized in $[400, 900]$\,kg/m$^3$ (hollow plastic pencils have effective density near 530; mass and inertia are input features, so the network absorbs the range). Convexity is the scope boundary: any real object is simulated as its convex hull, which is accurate for the target class. Elongated cylinders use capsule collision primitives in PyBullet, since cylinder-cylinder point contacts (crossed pencils) are numerically fragile.
   \item Initial conditions mixed across six regimes: (a) stable-ish stacks (settled 100 steps before recording), (b) objects lying scattered flat on the surface, (c) random drops from low height, and four pencil-stack regimes that mirror the demo scenes: (d) parallel bundles lying flat and touching, (e) crosshatch / log-cabin lattices of 2 to 4 layers, (f) groove pyramids, cylinders resting in the valley between a parallel pair, and (g) loose criss-cross piles built by dropping cylinders sequentially at random yaw over a small area, matching the reference demo arrangement; shallow-angle multi-contact resting is the dominant contact mode. Regimes (d)--(g) and rolling-to-rest trajectories get heavy weight: cylinders must appear often at rest and mid-roll, since roll-and-settle is the hardest low-energy behavior in this domain and the demo's centerpiece.
-  \item At 1 to 3 random times, an impulse of random magnitude and direction applied at a random surface point of a random object, recorded as the action channel. This teaches the response to user pokes.
+  \item Actions: external forces applied at a random surface point of a random object, recorded as the action channel. Two kinds, matching the two interaction modes. \emph{Pokes}: short bursts of random magnitude and direction at 1 to 3 random times. \emph{Grabs}: a spring-damper attached from the surface point to a target that moves along a smooth random path (lift, sideways pull, slide along the table) for 0.5 to 2\,s, then releases. In pile scenes the grabbed object is often load-bearing, which makes the data dense in support-removal collapse, the demo's signature behavior: pull the bottom pencil and the pile falls. The same spring law runs at inference, so grabbing is a force interaction, never a kinematic override, and a pinned pencil physically resists extraction instead of dragging neighbors into interpenetration.
   \item 300 steps recorded at $\Delta t = 1/60$\,s (simulated at 240\,Hz internally, subsampled), storing per-body poses and twists.
 \end{itemize}
 Target: 5{,}000 trajectories $\rightarrow$ $\sim$1.5M transitions, an hour or two on the M4 Pro's CPU cores with multiprocessing.
@@ -270,7 +273,8 @@ Practical notes: run with \texttt{PYTORCH\_ENABLE\_MPS\_FALLBACK=1}; build graph
 \begin{itemize}[itemsep=2pt]
   \item \textbf{Rollout error:} mean per-body translation and rotation error vs.\ ground truth at 50, 150, 300 steps.
   \item \textbf{Penetration depth:} mean and max interpenetration between bodies and with the ground; the learned model has no hard constraints, so this quantifies how well contact was learned.
-  \item \textbf{Stability:} fraction of initially stable scenes that remain at rest after 300 unperturbed steps. A model that knocks over stable stacks by itself is not ready.
+  \item \textbf{Stability:} fraction of initially stable scenes, settled criss-cross piles included, that remain at rest after 300 unperturbed steps. A model that knocks over stable piles by itself is not ready.
+  \item \textbf{Support-removal fidelity:} scripted extraction of a load-bearing body from a settled pile, run identically through PyBullet and the model; compare which bodies fall and where they settle. This is the demo's signature interaction, so it gets its own number.
   \item \textbf{Energy sanity:} total energy must not grow over a passive rollout.
   \item \textbf{Qualitative:} side-by-side videos, learned vs.\ PyBullet, same seed and same pokes.
 \end{itemize}

@@ -299,8 +299,8 @@ Running the script opens the PyBullet window and you watch plausible scenes sett
 \step{Record trajectories}
 Simulate at 240\,Hz internally (PyBullet default is fine) and record every 4th step, giving 60\,Hz data. After a 100-step settle period, record 300 frames of: per-body position, quaternion, linear and angular velocity (\texttt{p.getBasePositionAndOrientation}, \texttt{p.getBaseVelocity}).
 
-\step{Add recorded impulses (the ``poke'' channel)}
-At 1--3 random recorded frames per trajectory, apply \texttt{p.applyExternalForce} at a random point on a random body's surface with random direction and magnitude (calibrate magnitudes so pokes visibly move objects without launching them off-screen). Save, per impulse: the frame index, body id, application point, and force vector. This is the action channel: at inference time a mouse drag will be encoded the same way.
+\step{Add recorded forces (the poke-and-grab channel)}
+Two action kinds per trajectory, sharing one encoding. \emph{Pokes}: at 1--3 random frames, a short force burst at a random surface point of a random body (calibrate magnitudes so pokes visibly move objects without launching them off-screen). \emph{Grabs}: in about half of trajectories, attach a spring-damper from a random surface point (in pile scenes, often on a load-bearing body) to a target that moves along a smooth random path for 0.5--2\,s: lift, sideways pull, or slide, then release. Apply both via \texttt{p.applyExternalForce}; save frame index, body id, application point, and force vector per step. This is the action channel: at inference a mouse poke or grab is encoded identically, and the grab trajectories are what teach the model that pulling a supporting pencil out of a pile makes the rest collapse.
 \begin{trap}
 PyBullet's \texttt{applyExternalForce} must be re-applied every internal substep for the duration you intend, and uses flags \texttt{p.WORLD\_FRAME}. Forgetting the re-apply gives impulses 4$\times$ weaker than logged, and the model later learns wrong poke responses that you will chase for days in Phase 5.
 \end{trap}
@@ -464,8 +464,8 @@ FastAPI + WebSocket: on connect, send the packet; then receive \texttt{\{impulse
 \step{Minimal Three.js client}
 One HTML page: render each body as a colored mesh, orbit controls, update poses from the socket.
 
-\step{Mouse-to-impulse}
-On drag: raycast into the scene, hit-test body bounding boxes, convert drag direction and length into an impulse vector (capped at the training distribution's max), send it. Server encodes it into the action feature $\mathbf{a}^{\text{ext}}$ on the hit body's particles for $K{=}3$ steps with Gaussian falloff from the hit point, exactly matching how impulses were encoded in training data.
+\step{Mouse-to-force: pokes and grabs}
+On mouse down: raycast into the scene, hit-test body bounding boxes. A quick drag-release becomes a poke, a short force burst in the drag direction. Press-and-hold becomes a grab: a spring-damper force from the grab point toward the mouse target, recomputed every step until release, using the same spring gains as data generation. The server encodes both into the action feature $\mathbf{a}^{\text{ext}}$ on the hit body's particles with Gaussian falloff from the hit point, exactly matching the training-data encoding. Cap force magnitudes and target speeds at the training distribution's maxima.
 \begin{trap}
 If pokes in the demo feel wrong but Phase 4 videos looked right, the impulse \emph{encoding} mismatch between datagen and server is the culprit almost every time. Unit-test that both code paths produce identical action features for the same nominal poke.
 \end{trap}
