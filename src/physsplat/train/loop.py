@@ -236,6 +236,11 @@ def train(
                 model.eval()
                 errs = val_rollout_error(model, normalizer, val_trajs, device)
                 model.train()
+                if device == "mps":
+                    # val rollouts have per-scene node counts, and the MPS
+                    # allocator caches per shape; left alone it grows for
+                    # hours until the OS kills the process (happened at 70k)
+                    torch.mps.empty_cache()
                 print(f"VAL step {step_i} " + " ".join(
                     f"{k}={v:.4f}" for k, v in errs.items()), flush=True)
                 new = not val_path.exists()
