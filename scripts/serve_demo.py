@@ -147,7 +147,8 @@ async def ws(sock: WebSocket):
                 if n > cap:
                     force *= cap / n
                 act = (b, world_pt, force)
-            pos, quat = sim.step(act[0], act[1], act[2])
+            with torch.no_grad():
+                pos, quat = sim.step(act[0], act[1], act[2])
             await sock.send_text(json.dumps(
                 {"type": "state", "pos": np.round(pos, 5).tolist(),
                  "quat": np.round(quat, 5).tolist()}))

@@ -52,9 +52,13 @@ class LiveSim:
         return torch.cat(
             [self.offsets[b] @ R[b].T + self.pos[b] for b in range(self.B)])
 
-    @torch.no_grad()
     def step(self, act_body: int = -1, act_point=None, act_force=None):
-        """Advance one DT. act_point/act_force: world-space numpy (3,)."""
+        """Advance one DT. act_point/act_force: world-space numpy (3,).
+
+        Differentiable when autograd is enabled (rollout fine-tuning
+        backpropagates through several steps); inference callers wrap in
+        torch.no_grad(). Graph indices and action weights are computed on
+        detached copies (they are discrete / non-differentiable anyway)."""
         parts = self.particles_world()
         vh = []
         for h in range(C.HISTORY):
@@ -75,13 +79,13 @@ class LiveSim:
             fc = torch.tensor(act_force, dtype=torch.float32, device=self.device)
             sel = self.body_ids[:-1] == act_body
             feat = action_feature(
-                parts[sel].cpu().numpy(), pt.cpu().numpy(), fc.cpu().numpy(),
-                float(self.mass[act_body]))
+                parts[sel].detach().cpu().numpy(), pt.cpu().numpy(),
+                fc.cpu().numpy(), float(self.mass[act_body]))
             a_ext[sel] = torch.tensor(feat, dtype=torch.float32, device=self.device)
 
-        parts_np = parts.cpu().numpy()
+        parts_np = parts.detach().cpu().numpy()
         s_np, r_np = build_edges(
-            parts_np, vel_hist[:, -1].cpu().numpy(), self.body_ids_np)
+            parts_np, vel_hist[:, -1].detach().cpu().numpy(), self.body_ids_np)
         ef_np = edge_features(parts_np, s_np, r_np, self.body_ids_np)
         E = len(s_np)
         E_pad = max(1, -(-E // EDGE_BUCKET)) * EDGE_BUCKET
@@ -116,4 +120,4 @@ class LiveSim:
         self.lin_hist = self.lin_hist[1:] + [linvel]
         self.ang_hist = self.ang_hist[1:] + [angvel]
         self.quat_hist = self.quat_hist[1:] + [self.quat]
-        return self.pos.cpu().numpy(), self.quat.cpu().numpy()
+        return self.pos.detach().cpu().numpy(), self.quat.detach().cpu().numpy()

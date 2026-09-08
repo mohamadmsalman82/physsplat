@@ -149,6 +149,8 @@ def train(
     head: str = "body",
     resume: str | None = None,
     device: str | None = None,
+    ang_weight: float = 1.0,      # weight of the angular loss term
+    reset_lr: bool = False,       # on resume: restart schedule at `lr`
 ):
     device = device or ("mps" if torch.backends.mps.is_available() else "cpu")
     out = Path(out_dir)
@@ -172,9 +174,14 @@ def train(
     if resume:
         ck = torch.load(resume, map_location=device)
         model.load_state_dict(ck["model"])
-        opt.load_state_dict(ck["opt"])
-        sched.load_state_dict(ck["sched"])
         start_step = ck["step"]
+        if reset_lr or "opt" not in ck:
+            # experiment branch: fresh optimizer, schedule over remaining steps
+            gamma = (lr_final / lr) ** (1.0 / max(steps - start_step, 1))
+            sched = torch.optim.lr_scheduler.ExponentialLR(opt, gamma)
+        else:
+            opt.load_state_dict(ck["opt"])
+            sched.load_state_dict(ck["sched"])
         print(f"resumed from {resume} at step {start_step}", flush=True)
 
     val_trajs = None if overfit else load_val_trajectories(data_dir)
@@ -203,7 +210,7 @@ def train(
             per_row = lambda a, b: ((a - b) ** 2).mean(1)
             lin_loss = (per_row(pred[:, :3], tgt[:, :3]) * mask).sum() / mask.sum()
             ang_loss = (per_row(pred[:, 3:], tgt[:, 3:]) * mask).sum() / mask.sum()
-            loss = lin_loss + ang_loss
+            loss = lin_loss + ang_weight * ang_loss
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
