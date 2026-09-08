@@ -19,10 +19,15 @@ NODE_BUCKET = 256   # pad node count so per-scene shapes don't multiply
 
 
 class LiveSim:
-    def __init__(self, model, normalizer, scene: dict, init: dict, device="cpu"):
+    def __init__(self, model, normalizer, scene: dict, init: dict, device="cpu",
+                 ground_guard: bool = False):
         """scene: offsets_list, mass, inertia (numpy).
-        init: pos/quat/linvel/angvel, each (HISTORY, B, ...) numpy warmup."""
+        init: pos/quat/linvel/angvel, each (HISTORY, B, ...) numpy warmup.
+        ground_guard: analytic non-penetration cleanup for demos (lift a body
+        whose particles dip below z=0, cancel downward velocity). Off for
+        evaluation so the scorecard measures the model, not the guard."""
         self.model, self.norm, self.device = model, normalizer, device
+        self.ground_guard = ground_guard
         B = self.B = len(scene["mass"])
         self.offsets = [torch.tensor(o, dtype=torch.float32, device=device)
                         for o in scene["offsets_list"]]
@@ -123,6 +128,16 @@ class LiveSim:
         self.pos, self.quat, linvel, angvel = step(
             self.pos, self.quat, self.lin_hist[-1], self.ang_hist[-1],
             residual, ext_lin, ext_ang)
+        if self.ground_guard:
+            R = quat_to_matrix(self.quat)
+            for b in range(self.B):
+                minz = float((self.offsets[b] @ R[b].T)[:, 2].min() + self.pos[b, 2])
+                if minz < 0:
+                    self.pos = self.pos.clone()
+                    self.pos[b, 2] = self.pos[b, 2] - minz
+                    if linvel[b, 2] < 0:
+                        linvel = linvel.clone()
+                        linvel[b, 2] = 0.0
         self.lin_hist = self.lin_hist[1:] + [linvel]
         self.ang_hist = self.ang_hist[1:] + [angvel]
         self.quat_hist = self.quat_hist[1:] + [self.quat]

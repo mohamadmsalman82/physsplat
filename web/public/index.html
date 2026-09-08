@@ -32,7 +32,8 @@
   <p id="stats">loading model...</p>
   <p id="err"></p>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+<!-- ort.webgpu bundle: includes the WebGPU backend (ort.min.js is wasm-only) -->
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.webgpu.min.js"></script>
 <script type="importmap">
 {"imports": {"three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.module.min.js",
              "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}

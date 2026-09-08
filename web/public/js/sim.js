@@ -9,11 +9,15 @@ import {
 } from "./physics.js";
 
 export class PhysSim {
-  constructor(ort, session, runtime, packet) {
-    this.ort = ort;
-    this.session = session;
+  /**
+   * backend: { kind: "gpu", net: GpuNet } (custom WebGPU, ~30 ms/step) or
+   *          { kind: "ort", ort, session } (ONNX Runtime Web fallback).
+   */
+  constructor(backend, runtime, packet, { groundGuard = true } = {}) {
+    this.backend = backend;
     this.rt = runtime;
     this.packet = packet;
+    this.groundGuard = groundGuard;   // off in parity tests (Python eval is unguarded)
     this.reset();
   }
 
@@ -57,6 +61,29 @@ export class PhysSim {
     return out;
   }
 
+  /**
+   * Analytic ground guard (design doc, non-penetration section): the learned
+   * model has no hard constraint and its ground contact residual can run a
+   * little weak on out-of-distribution reconstructed bodies (measured: a
+   * slow ~1.5 mm/s sink on photo scenes). If any particle dips below z=0,
+   * lift the body out and cancel its downward velocity. Millimetre-scale
+   * cleanup, never applied during evaluation.
+   */
+  #groundGuard() {
+    for (let b = 0; b < this.B; b++) {
+      const R = quatToMatrix(this.state.quat[b]);
+      let minz = Infinity;
+      for (const o of this.offsets[b]) {
+        const z = R[6] * o[0] + R[7] * o[1] + R[8] * o[2] + this.state.pos[b][2];
+        if (z < minz) minz = z;
+      }
+      if (minz < 0) {
+        this.state.pos[b][2] -= minz;
+        if (this.state.linvel[b][2] < 0) this.state.linvel[b][2] = 0;
+      }
+    }
+  }
+
   particlesWorld() {
     const parts = new Float64Array(this.N * 3);
     let k = 0;
@@ -92,6 +119,7 @@ export class PhysSim {
 
   async step(actBody = -1, actPoint = null, actForce = null) {
     const rt = this.rt, n = rt.normalize, H = rt.history;
+    const T0 = performance.now();
     const parts = this.particlesWorld();
     const vels = Array.from({ length: H }, (_, h) => this.#particleVels(h));
 
@@ -129,21 +157,28 @@ export class PhysSim {
     const lastVel = vels[H - 1];
     const { senders, receivers } = buildEdges(parts, lastVel,
       rt.contact_radius, rt.dt);
+    const T1 = performance.now();
     // Export contract (race-free segmented aggregation): edges sorted by
     // receiver with segment pointers; nodes ordered by body with body
     // pointers. No edge padding needed here (that was for MPS kernels).
-    const E = senders.length;
+    const Ereal = senders.length;
     const efReal = edgeFeatures(parts, senders, receivers, this.bodyIds,
       rt.contact_radius);
-    const order = Array.from({ length: E }, (_, i) => i)
+    const order = Array.from({ length: Ereal }, (_, i) => i)
       .sort((a, b) => receivers[a] - receivers[b] || a - b);
+    // Pad the edge count to a bucket so tensor shapes are static per scene
+    // (lets ORT capture and replay the GPU command stream). Padded edges
+    // are self-loops on the dummy node (last index), which sorts last and
+    // lands in the dummy's own segment: zero effect on real nodes.
+    const Nn = this.N + 1;                       // nodes incl. one dummy
+    const E = Math.max(1, Math.ceil(Ereal / rt.edge_bucket)) * rt.edge_bucket;
     const s64 = new BigInt64Array(E), r64 = new BigInt64Array(E);
     const ef = new Float32Array(E * 5);
     order.forEach((o, e) => {
       s64[e] = BigInt(senders[o]); r64[e] = BigInt(receivers[o]);
       for (let k = 0; k < 5; k++) ef[5 * e + k] = efReal[5 * o + k];
     });
-    const Nn = this.N + 1;                       // nodes incl. one dummy
+    for (let e = Ereal; e < E; e++) { s64[e] = BigInt(this.N); r64[e] = BigInt(this.N); }
     const segPtr = new BigInt64Array(Nn + 1);
     let ei = 0;
     for (let i = 0; i <= Nn; i++) {
@@ -159,18 +194,34 @@ export class PhysSim {
       bodyPtr[b] = BigInt(ni);
     }
 
-    const T = this.ort.Tensor;
-    const out = await this.session.run({
-      node_feats: new T("float32", nf, [Nn, NODE_DIM]),
-      edge_feats: new T("float32", ef, [E, 5]),
-      senders: new T("int64", s64, [E]),
-      receivers: new T("int64", r64, [E]),
-      seg_ptr: new T("int64", segPtr, [Nn + 1]),
-      body_ids: new T("int64", bids64, [Nn]),
-      body_ptr: new T("int64", bodyPtr, [this.B + 2]),
-      body_scalars: new T("float32", this.bodyScalars, [this.B + 1, 4]),
-    });
-    const pred = out.residual_norm.data; // (B+1, 6) normalized
+    const T2 = performance.now();
+    let pred;   // (B+1, 6) normalized residuals
+    if (this.backend.kind === "gpu") {
+      const u32 = (a) => Uint32Array.from(a, (x) => Number(x));
+      pred = await this.backend.net.forward({
+        nodeFeats: nf, nodeDim: NODE_DIM, edgeFeats: ef,
+        senders: u32(s64), receivers: u32(r64), segPtr: u32(segPtr),
+        bodyPtr: u32(bodyPtr), bodyScalars: this.bodyScalars,
+        N: Nn, E, B: this.B + 1, nReal: this.N,
+      });
+    } else {
+      const T = this.backend.ort.Tensor;
+      const out = await this.backend.session.run({
+        node_feats: new T("float32", nf, [Nn, NODE_DIM]),
+        edge_feats: new T("float32", ef, [E, 5]),
+        senders: new T("int64", s64, [E]),
+        receivers: new T("int64", r64, [E]),
+        seg_ptr: new T("int64", segPtr, [Nn + 1]),
+        body_ids: new T("int64", bids64, [Nn]),
+        body_ptr: new T("int64", bodyPtr, [this.B + 2]),
+        body_scalars: new T("float32", this.bodyScalars, [this.B + 1, 4]),
+      });
+      pred = out.residual_norm.location === "gpu-buffer"
+        ? await out.residual_norm.getData(true) : out.residual_norm.data;
+    }
+    const T3 = performance.now();
+    this.timing = { features_ms: T1 - T0, graph_ms: T2 - T1, net_ms: T3 - T2,
+      E: Ereal, N: this.N, backend: this.backend.kind };
 
     const residual = new Float64Array(this.B * 6);
     for (let b = 0; b < this.B; b++)
@@ -182,6 +233,7 @@ export class PhysSim {
       this.inertia, actBody, actPoint ?? [0, 0, 0], actForce ?? [0, 0, 0],
       this.B);
     stepBodies(this.state, residual, ext, rt.dt, rt.gravity);
+    if (this.groundGuard) this.#groundGuard();
     this.linHist.shift(); this.linHist.push(this.state.linvel.map((v) => [...v]));
     this.angHist.shift(); this.angHist.push(this.state.angvel.map((v) => [...v]));
     this.quatHist.shift(); this.quatHist.push(this.state.quat.map((q) => [...q]));

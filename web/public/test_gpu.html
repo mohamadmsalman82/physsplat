@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>GpuNet parity</title>
+<style>body{font:14px monospace;background:#111;color:#ddd;padding:20px}</style></head>
+<body><pre id="out">running...</pre>
+<script type="module">
+import { GpuNet } from "./js/gpu_net.js";
+const out = document.getElementById("out");
+const log = (s) => { out.textContent += "\n" + s; console.log("[gpu-parity] " + s); };
+try {
+  const fx = await (await fetch("../test/fixtures/gpu_forward.json")).json();
+  const net = await GpuNet.create("./model/weights.json", "./model/weights.bin");
+  const N = fx.body_ids.length, E = fx.senders.length, B = fx.body_scalars.length;
+  const inputs = {
+    nodeFeats: Float32Array.from(fx.node_feats.flat()), nodeDim: fx.node_feats[0].length,
+    edgeFeats: Float32Array.from(fx.edge_feats.flat()),
+    senders: Uint32Array.from(fx.senders), receivers: Uint32Array.from(fx.receivers),
+    segPtr: Uint32Array.from(fx.seg_ptr), bodyPtr: Uint32Array.from(fx.body_ptr),
+    bodyScalars: Float32Array.from(fx.body_scalars.flat()), N, E, B,
+    nReal: fx.body_ids.indexOf(B - 1),   // first dummy node (dummy body = last id)
+  };
+  const res = await net.forward(inputs);
+  const exp = fx.expected.flat();
+  // score REAL bodies only: the dummy body's row is derived from dummy-node
+  // aggregates that the GPU kernel deliberately skips (never used)
+  let worst = 0, worstDummy = 0;
+  exp.forEach((v, i) => {
+    const err = Math.abs(v - res[i]);
+    if (Math.floor(i / 6) < B - 1) worst = Math.max(worst, err);
+    else worstDummy = Math.max(worstDummy, err);
+  });
+  log(`N=${N} E=${E} B=${B} (real bodies ${B - 1})`);
+  log(`max |gpu - torch| real bodies = ${worst.toExponential(2)}  (${worst < 1e-3 ? "PASS" : "FAIL"}); dummy row ${worstDummy.toExponential(1)} (ignored)`);
+  const t0 = performance.now(); const reps = 20;
+  for (let i = 0; i < reps; i++) await net.forward(inputs);
+  log(`timing: ${((performance.now() - t0) / reps).toFixed(1)} ms/forward`);
+} catch (e) { log("ERROR " + e.message); console.error(e); }
+</script></body></html>

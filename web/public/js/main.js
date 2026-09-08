@@ -176,13 +176,29 @@ async function physicsLoop() {
 // ---------------------------------------------------------------- startup
 (async () => {
   try {
-    const ortlib = globalThis.ort;
-    ortlib.env.wasm.numThreads = Math.min(4, navigator.hardwareConcurrency || 2);
     const runtime = await (await fetch("./model/runtime.json")).json();
-    const session = await ortlib.InferenceSession.create(
-      "./model/simulator.onnx",
-      { executionProviders: ["webgpu", "wasm"] });
-    sim = new PhysSim(ortlib, session, runtime, { bodies: [] });
+    const q = new URLSearchParams(location.search);
+    // Backend: custom WebGPU kernels (js/gpu_net.js, ~30 ms/step) when
+    // WebGPU exists; otherwise ONNX Runtime Web on wasm (correct, slow).
+    // ?backend=ort forces the fallback for comparison.
+    let backend = null;
+    if (navigator.gpu && q.get("backend") !== "ort") {
+      try {
+        const { GpuNet } = await import("./gpu_net.js");
+        const net = await GpuNet.create("./model/weights.json", "./model/weights.bin");
+        backend = { kind: "gpu", net };
+      } catch (e) { console.warn("[physsplat] WebGPU backend unavailable:", e.message); }
+    }
+    if (!backend) {
+      const ortlib = globalThis.ort;
+      ortlib.env.wasm.numThreads = Math.min(4, navigator.hardwareConcurrency || 2);
+      ortlib.env.wasm.simd = true;
+      const session = await ortlib.InferenceSession.create(
+        "./model/simulator.onnx", { executionProviders: ["wasm"] });
+      backend = { kind: "ort", ort: ortlib, session };
+    }
+    console.log(`[physsplat] backend: ${backend.kind}`);
+    sim = new PhysSim(backend, runtime, { bodies: [] });
     const names = await (await fetch("./packets/index.json")).json();
     const sel = $("scene");
     names.forEach((n) => sel.add(new Option(n, n)));
@@ -190,9 +206,13 @@ async function physicsLoop() {
     await loadScene(names[0]);
     physicsLoop();
     setInterval(() => {
+      const t = sim?.timing;
+      const detail = t ? ` [${t.backend}: features ${t.features_ms.toFixed(0)} | graph ` +
+        `${t.graph_ms.toFixed(0)} | net ${t.net_ms.toFixed(0)} ms; ` +
+        `N=${t.N} E=${t.E}]` : "";
       $("stats").textContent =
         `model step ${runtime.step} | physics ${stepMs.toFixed(0)} ms/step ` +
-        `(${(1000 / Math.max(stepMs, 1)).toFixed(0)} Hz capable)`;
+        `(${(1000 / Math.max(stepMs, 1)).toFixed(0)} Hz capable)${detail}`;
     }, 500);
   } catch (e) { err(e); }
 })();

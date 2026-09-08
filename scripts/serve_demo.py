@@ -80,7 +80,7 @@ def make_sim(d, model, normalizer, device) -> LiveSim:
     scene = {"offsets_list": d["offsets_list"], "mass": d["mass"],
              "inertia": d["inertia_diag"]}
     init = {k: d[k][:H] for k in ("pos", "quat", "linvel", "angvel")}
-    return LiveSim(model, normalizer, scene, init, device)
+    return LiveSim(model, normalizer, scene, init, device, ground_guard=True)
 
 
 @app.get("/")

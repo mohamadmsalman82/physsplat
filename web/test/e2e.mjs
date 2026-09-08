@@ -18,7 +18,8 @@ const packet = JSON.parse(
 
 const session = await ort.InferenceSession.create(
   `${root}web/public/model/simulator.onnx`);
-const sim = new PhysSim(ort, session, runtime, packet);
+const sim = new PhysSim({ kind: "ort", ort, session }, runtime, packet,
+  { groundGuard: false });   // Python reference is unguarded
 
 let worst = 0;
 const t0 = Date.now();

@@ -27,11 +27,14 @@ def segment_sum(x: torch.Tensor, ptr: torch.Tensor) -> torch.Tensor:
     """Sum rows of x within segments [ptr[i], ptr[i+1]). x must be ordered
     by segment. Deterministic under any threading, unlike ScatterND
     reduction='add' in onnxruntime, which races on duplicate indices
-    (measured: 5e-4 run-to-run drift at 8k edges). float64 cumsum keeps the
-    boundary differences exact to ~1e-7 after the cast back."""
-    cs = torch.cumsum(x.double(), 0)
+    (measured: 5e-4 run-to-run drift at 8k edges). float32 on purpose:
+    WebGPU has no f64, and running the whole graph on the GPU is what makes
+    the browser interactive (wasm was ~700 ms/step, compute-bound). With
+    LayerNorm'd latents the running sums stay ~1e2 in magnitude, so the
+    boundary differences carry ~1e-5 error, inside the parity gate."""
+    cs = torch.cumsum(x, 0)
     cs0 = torch.cat([torch.zeros(1, x.shape[1], dtype=cs.dtype, device=x.device), cs])
-    return (cs0[ptr[1:]] - cs0[ptr[:-1]]).to(x.dtype)
+    return cs0[ptr[1:]] - cs0[ptr[:-1]]
 
 
 class OnnxWrapper(torch.nn.Module):
@@ -108,6 +111,9 @@ def export(checkpoint: str, out_dir: str) -> Path:
             "body_scalars": {0: "B"}, "residual_norm": {0: "B"},
         },
         opset_version=18,
+        # single self-contained file: ONNX Runtime Web does not resolve a
+        # sibling .onnx.data file the way the Python runtime does
+        external_data=False,
     )
 
     norm = Normalizer(ck.get("stats_path", "data/stats.json"))
