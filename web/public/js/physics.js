@@ -19,38 +19,44 @@ export function buildEdges(parts, vels, contactRadius, dt) {
   // positions; returns both directions of every edge, i < j pairs found
   const N = parts.length / 3;
   const r = contactRadius;
-  const cell = r;
+  const inv = 1 / r;                      // cell size = contact radius
   const pairs = new Set();
-  const key = (x, y, z) => `${x},${y},${z}`;
+  // integer cell key packed into one double (exact below 2^53): cells are
+  // 6 mm, so 16 bits per axis covers +/-196 m. String keys cost ~10 ms/step.
+  const OFF = 1 << 15, SH = 1 << 16;
+  const key = (x, y, z) => ((x + OFF) * SH + (y + OFF)) * SH + (z + OFF);
 
-  const passes = vels ? 2 : 1;
+  // the predictive pass only matters when something moves; at rest the
+  // extrapolated positions are the current ones and the pass is wasted
+  let moving = false;
+  if (vels) for (let i = 0; i < N * 3; i++) if (Math.abs(vels[i]) * dt > 1e-7) { moving = true; break; }
+  const passes = moving ? 2 : 1;
+  const px = new Float64Array(N * 3);
+  const cx = new Int32Array(N), cy = new Int32Array(N), cz = new Int32Array(N);
   for (let pass = 0; pass < passes; pass++) {
     const grid = new Map();
-    const px = new Float64Array(N * 3);
     for (let i = 0; i < N * 3; i++)
       px[i] = pass === 0 ? parts[i] : parts[i] + vels[i] * dt;
     for (let i = 0; i < N; i++) {
-      const cx = Math.floor(px[3 * i] / cell),
-        cy = Math.floor(px[3 * i + 1] / cell),
-        cz = Math.floor(px[3 * i + 2] / cell);
-      const k = key(cx, cy, cz);
-      if (!grid.has(k)) grid.set(k, []);
-      grid.get(k).push(i);
+      cx[i] = Math.floor(px[3 * i] * inv);
+      cy[i] = Math.floor(px[3 * i + 1] * inv);
+      cz[i] = Math.floor(px[3 * i + 2] * inv);
+      const k = key(cx[i], cy[i], cz[i]);
+      const b = grid.get(k);
+      if (b) b.push(i); else grid.set(k, [i]);
     }
     for (let i = 0; i < N; i++) {
-      const cx = Math.floor(px[3 * i] / cell),
-        cy = Math.floor(px[3 * i + 1] / cell),
-        cz = Math.floor(px[3 * i + 2] / cell);
+      const xi = px[3 * i], yi = px[3 * i + 1], zi = px[3 * i + 2];
       for (let dx = -1; dx <= 1; dx++)
         for (let dy = -1; dy <= 1; dy++)
           for (let dz = -1; dz <= 1; dz++) {
-            const bucket = grid.get(key(cx + dx, cy + dy, cz + dz));
+            const bucket = grid.get(key(cx[i] + dx, cy[i] + dy, cz[i] + dz));
             if (!bucket) continue;
-            for (const j of bucket) {
+            for (let n = 0; n < bucket.length; n++) {
+              const j = bucket[n];
               if (j <= i) continue;
-              const ddx = px[3 * i] - px[3 * j],
-                ddy = px[3 * i + 1] - px[3 * j + 1],
-                ddz = px[3 * i + 2] - px[3 * j + 2];
+              const ddx = xi - px[3 * j], ddy = yi - px[3 * j + 1],
+                ddz = zi - px[3 * j + 2];
               if (ddx * ddx + ddy * ddy + ddz * ddz < r * r)
                 pairs.add(i * N + j);
             }

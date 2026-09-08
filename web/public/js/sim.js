@@ -181,12 +181,12 @@ export class PhysSim {
     let k = 0;
     for (let b = 0; b < this.B; b++) {
       const R = quatToMatrix(this.state.quat[b]);
-      const p = this.state.pos[b];
-      for (const o of this.offsets[b]) {
-        const w = matVec(R, o);
-        parts[k++] = w[0] + p[0];
-        parts[k++] = w[1] + p[1];
-        parts[k++] = w[2] + p[2];
+      const p = this.state.pos[b], os = this.offsets[b];
+      for (let n = 0; n < os.length; n++) {
+        const o = os[n];
+        parts[k++] = R[0] * o[0] + R[1] * o[1] + R[2] * o[2] + p[0];
+        parts[k++] = R[3] * o[0] + R[4] * o[1] + R[5] * o[2] + p[1];
+        parts[k++] = R[6] * o[0] + R[7] * o[1] + R[8] * o[2] + p[2];
       }
     }
     return parts;
@@ -199,11 +199,15 @@ export class PhysSim {
     for (let b = 0; b < this.B; b++) {
       const R = quatToMatrix(this.quatHist[h][b]);
       const lv = this.linHist[h][b], av = this.angHist[h][b];
-      for (const o of this.offsets[b]) {
-        const r = matVec(R, o);
-        v[k++] = lv[0] + av[1] * r[2] - av[2] * r[1];
-        v[k++] = lv[1] + av[2] * r[0] - av[0] * r[2];
-        v[k++] = lv[2] + av[0] * r[1] - av[1] * r[0];
+      const os = this.offsets[b];
+      for (let n = 0; n < os.length; n++) {
+        const o = os[n];
+        const r0 = R[0] * o[0] + R[1] * o[1] + R[2] * o[2];
+        const r1 = R[3] * o[0] + R[4] * o[1] + R[5] * o[2];
+        const r2 = R[6] * o[0] + R[7] * o[1] + R[8] * o[2];
+        v[k++] = lv[0] + av[1] * r2 - av[2] * r1;
+        v[k++] = lv[1] + av[2] * r0 - av[0] * r2;
+        v[k++] = lv[2] + av[0] * r1 - av[1] * r0;
       }
     }
     return v;
@@ -256,8 +260,15 @@ export class PhysSim {
     const Ereal = senders.length;
     const efReal = edgeFeatures(parts, senders, receivers, this.bodyIds,
       rt.contact_radius);
-    const order = Array.from({ length: Ereal }, (_, i) => i)
-      .sort((a, b) => receivers[a] - receivers[b] || a - b);
+    // counting sort by receiver (stable): edges arrive in sender-major order
+    // and a comparison sort on ~5k edges was a measurable slice of the step
+    const order = new Int32Array(Ereal);
+    {
+      const cnt = new Int32Array(this.N + 2);
+      for (let e = 0; e < Ereal; e++) cnt[receivers[e] + 1]++;
+      for (let i = 1; i <= this.N + 1; i++) cnt[i] += cnt[i - 1];
+      for (let e = 0; e < Ereal; e++) order[cnt[receivers[e]]++] = e;
+    }
     // Pad the edge count to a bucket so tensor shapes are static per scene
     // (lets ORT capture and replay the GPU command stream). Padded edges
     // are self-loops on the dummy node (last index), which sorts last and
