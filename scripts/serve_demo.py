@@ -51,10 +51,21 @@ def load_scene(data_dir: str, index: int) -> dict:
     return d
 
 
+def load_packet(path: str) -> dict:
+    """A photo-derived scene packet (scripts/recon_pipeline.py)."""
+    import pickle
+
+    with open(path, "rb") as f:
+        d = pickle.load(f)
+    d["regime"] = f"photo:{Path(path).stem}"
+    return d
+
+
 def scene_message(d) -> dict:
     bodies = []
     for b, offs in enumerate(d["offsets_list"]):
-        if d["shape_kind"][b] == 0:
+        kind = d["shape_kind"][b] if "shape_kind" in d else 0  # packets: capsules
+        if kind == 0:
             _, half, radius = capsule_from_offsets(offs)
             bodies.append({"kind": "capsule", "half": half, "radius": radius})
         else:
@@ -152,6 +163,8 @@ def main():
     ap.add_argument("checkpoint")
     ap.add_argument("--data", default="data/raw.nosync/train")
     ap.add_argument("--scene", type=int, default=0)
+    ap.add_argument("--packet", default=None,
+                    help="serve a photo-derived packet (.pkl) instead")
     ap.add_argument("--port", type=int, default=8765)
     args = ap.parse_args()
 
@@ -162,7 +175,8 @@ def main():
     STATE["model"] = model
     STATE["norm"] = Normalizer(ck.get("stats_path", "data/stats.json")).to(device)
     STATE["device"] = device
-    STATE["scene"] = load_scene(args.data, args.scene)
+    STATE["scene"] = (load_packet(args.packet) if args.packet
+                      else load_scene(args.data, args.scene))
     print(f"serving scene {args.scene} ({STATE['scene']['regime']}) "
           f"from step-{ck.get('step')} checkpoint on :{args.port}")
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
