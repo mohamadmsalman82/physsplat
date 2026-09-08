@@ -8,7 +8,7 @@
  */
 import { readFileSync } from "node:fs";
 import ort from "onnxruntime-node";
-import { PhysSim } from "../js/sim.js";
+import { PhysSim } from "../public/js/sim.js";
 
 const root = new URL("../..", import.meta.url).pathname;
 const runtime = JSON.parse(readFileSync(`${root}web/public/model/runtime.json`));

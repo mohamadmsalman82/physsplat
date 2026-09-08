@@ -8,7 +8,7 @@
 import { readFileSync } from "node:fs";
 import {
   buildEdges, edgeFeatures, externalAccels, stepBodies,
-} from "../js/physics.js";
+} from "../public/js/physics.js";
 
 const load = (p) => JSON.parse(readFileSync(new URL(p, import.meta.url)));
 let failures = 0;

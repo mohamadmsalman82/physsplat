@@ -42,7 +42,7 @@ async function loadScene(name) {
   groups.forEach((g) => scene.remove(g));
   proxies.forEach((p) => scene.remove(p));
   groups = []; proxies = [];
-  const packet = await (await fetch(`./public/packets/${name}.json`)).json();
+  const packet = await (await fetch(`./packets/${name}.json`)).json();
   sim.packet = packet;
   sim.reset();
   packet.bodies.forEach((b, i) => {
@@ -178,12 +178,12 @@ async function physicsLoop() {
   try {
     const ortlib = globalThis.ort;
     ortlib.env.wasm.numThreads = Math.min(4, navigator.hardwareConcurrency || 2);
-    const runtime = await (await fetch("./public/model/runtime.json")).json();
+    const runtime = await (await fetch("./model/runtime.json")).json();
     const session = await ortlib.InferenceSession.create(
-      "./public/model/simulator.onnx",
+      "./model/simulator.onnx",
       { executionProviders: ["webgpu", "wasm"] });
     sim = new PhysSim(ortlib, session, runtime, { bodies: [] });
-    const names = await (await fetch("./public/packets/index.json")).json();
+    const names = await (await fetch("./packets/index.json")).json();
     const sel = $("scene");
     names.forEach((n) => sel.add(new Option(n, n)));
     sel.onchange = () => loadScene(sel.value);

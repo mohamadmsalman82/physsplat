@@ -2,6 +2,8 @@
 
 **A photo of everyday objects in. Interactive, learned 3D physics in your browser out.**
 
+**Live demo: [physsplat.vercel.app](https://physsplat.vercel.app)** (physics runs entirely in your browser; drag a pencil to grab it, flick to poke)
+
 PhysSplat turns a single photograph of simple objects on a flat surface (blocks, pencils, erasers) into a fully interactive 3D simulation. The scene is reconstructed as 3D Gaussian Splats, decomposed into rigid bodies without supervision, and simulated by a graph neural network trained entirely on synthetic data — no hand-coded collision solver. You orbit the scene, poke objects with the mouse, and watch them topple, slide, and roll, with every physics step running client-side in the browser.
 
 ```
