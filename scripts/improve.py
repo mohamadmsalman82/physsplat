@@ -56,6 +56,15 @@ CANDIDATES = [
      "deeper unroll (0.2 s): rest-creep develops over ~1 s"),
     ("rollout_k16", "rollout", {"K": 16, "lr": 2e-6},
      "deeper still, lower lr for stability of the unrolled gradient"),
+    # --- round 3: stability plateaued ~0.45 under generic rollout tuning;
+    # attack rest-creep directly with settled-only windows and long unrolls
+    ("rest_k24", "rollout", {"K": 24, "lr": 3e-6, "rest_only": True},
+     "settled pre-action windows only, 0.4 s unroll: 'stay put' objective"),
+    ("rest_k24_long", "rollout", {"K": 24, "lr": 3e-6, "rest_only": True,
+                                  "steps": 6000},
+     "same, twice the iterations"),
+    ("mixed_k12", "rollout", {"K": 12, "lr": 3e-6},
+     "generic rollout pass after rest tuning: guard interaction quality"),
 ]
 
 
