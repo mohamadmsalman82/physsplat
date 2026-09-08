@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PhysSplat</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #101216; color: #dbe2ea;
+         font: 14px/1.45 system-ui, sans-serif; overflow: hidden; }
+  #hud { position: fixed; top: 14px; left: 14px; z-index: 2;
+         background: #181b21cc; border: 1px solid #2a2f38; border-radius: 10px;
+         padding: 12px 14px; max-width: 300px; backdrop-filter: blur(6px); }
+  #hud h1 { margin: 0 0 4px; font-size: 16px; color: #8ec5ff; }
+  #hud p { margin: 4px 0; color: #9aa5b1; font-size: 12.5px; }
+  #stats { font-variant-numeric: tabular-nums; color: #6ee7a8; }
+  select, button { background: #232833; color: #dbe2ea; border: 1px solid #3a4150;
+    border-radius: 7px; padding: 6px 10px; margin: 6px 6px 0 0; cursor: pointer;
+    font-size: 13px; }
+  #err { color: #ff8080; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <h1>PhysSplat</h1>
+  <p>A photo of real pencils, reconstructed to 3D and simulated by a learned
+     neural physics model, running entirely in your browser.</p>
+  <p><b>drag</b> a pencil to grab it &middot; <b>flick</b> to poke &middot;
+     scroll/drag empty space to orbit</p>
+  <select id="scene"></select>
+  <button id="reset">reset</button>
+  <p id="stats">loading model...</p>
+  <p id="err"></p>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+<script type="importmap">
+{"imports": {"three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.module.min.js",
+             "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
+</script>
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>

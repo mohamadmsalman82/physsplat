@@ -1,0 +1,58 @@
+"""Scene packet (.pkl) -> web JSON under web/public/packets/.
+
+    uv run python scripts/export_packet_web.py data/packets.nosync/*.pkl
+
+Each packet carries physics data (offsets, mass, inertia, init pose),
+render point clouds (true reconstruction colors), and a capsule proxy per
+body for raycast picking. An index.json lists available scenes.
+"""
+
+import argparse
+import json
+import pickle
+from pathlib import Path
+
+import numpy as np
+
+from physsplat.eval.metrics import capsule_from_offsets
+
+
+def convert(pkl_path: str, out_dir: Path) -> str:
+    with open(pkl_path, "rb") as f:
+        d = pickle.load(f)
+    name = Path(pkl_path).stem
+    r3 = lambda a, n=5: np.round(np.asarray(a, np.float64), n).tolist()
+    bodies = []
+    for b in range(len(d["offsets_list"])):
+        axis, half, radius = capsule_from_offsets(d["offsets_list"][b])
+        bodies.append({
+            "offsets": r3(d["offsets_list"][b]),
+            "mass": float(d["mass"][b]),
+            "inertia": r3(d["inertia_diag"][b], 12),
+            "pos": r3(d["pos"][-1][b]),
+            "quat": r3(d["quat"][-1][b], 6),
+            "capsule": {"axis": r3(axis, 4), "half": round(float(half), 4),
+                        "radius": round(float(radius), 4)},
+            "render_verts": r3(d["render"][b]["verts"], 4),
+            "render_colors": np.asarray(d["render"][b]["colors"], np.uint8).tolist(),
+        })
+    out = {"name": name, "bodies": bodies}
+    path = out_dir / f"{name}.json"
+    path.write_text(json.dumps(out))
+    print(f"{path} ({path.stat().st_size/1e6:.1f} MB, {len(bodies)} bodies)")
+    return name
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("pkls", nargs="+")
+    ap.add_argument("--out", default="web/public/packets")
+    args = ap.parse_args()
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    names = [convert(p, out) for p in args.pkls]
+    (out / "index.json").write_text(json.dumps(names))
+
+
+if __name__ == "__main__":
+    main()
