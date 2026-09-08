@@ -81,22 +81,37 @@ def main():
     ap.add_argument("--margin", type=float, default=0.5, help="composite points")
     ap.add_argument("--data", default="data/raw.nosync/train")
     ap.add_argument("--out", default="checkpoints/improve")
+    ap.add_argument("--skip", default="",
+                    help="comma-separated candidate names already rejected")
+    ap.add_argument("--baseline-from-ledger", action="store_true",
+                    help="reuse the ledger's most recent record for this base "
+                         "instead of re-evaluating (crash recovery)")
     args = ap.parse_args()
 
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     Path(args.out).mkdir(parents=True, exist_ok=True)
     best_ckpt = str(Path(args.out) / "best.pt")
-    shutil.copy(args.base, best_ckpt)
+    if Path(args.base).resolve() != Path(best_ckpt).resolve():
+        shutil.copy(args.base, best_ckpt)
 
-    print("== baseline ==", flush=True)
-    best = run_scorecard(best_ckpt, args.n, device, args.data, quiet=True)
-    best_id = f"base@{best['step']}"
-    ledger.append({"id": best_id, "checkpoint": args.base, "step": best["step"],
-                   "n": args.n, "change": "baseline for improve loop",
-                   "parent": "", "agg": best})
-    print(f"baseline composite {best['composite']:.1f}", flush=True)
+    base_step = torch.load(args.base, map_location="cpu")["step"]
+    best_id = f"base@{base_step}"
+    prior = [r for r in ledger.load()
+             if r.get("step") == base_step and r.get("n") == args.n
+             and r["id"].startswith("base@")] if args.baseline_from_ledger else []
+    if prior:
+        best = prior[-1]["agg"]
+        print(f"== baseline (from ledger) composite {best['composite']:.1f} ==",
+              flush=True)
+    else:
+        print("== baseline ==", flush=True)
+        best = run_scorecard(best_ckpt, args.n, device, args.data, quiet=True)
+        ledger.append({"id": best_id, "checkpoint": args.base, "step": best["step"],
+                       "n": args.n, "change": "baseline for improve loop",
+                       "parent": "", "agg": best})
+        print(f"baseline composite {best['composite']:.1f}", flush=True)
 
-    rejected_from = set()
+    rejected_from = {(best_id, name) for name in args.skip.split(",") if name}
     ci = 0
     for i in range(args.budget):
         # next candidate not yet rejected from this parent
