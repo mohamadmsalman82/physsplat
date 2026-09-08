@@ -31,6 +31,8 @@ def main():
     ap.add_argument("--n", type=int, default=6)
     ap.add_argument("--split", default="test")
     ap.add_argument("--out", default="data/audit/compare")
+    ap.add_argument("--regimes", default=None,
+                    help="comma-separated filter, e.g. pile,crosshatch,pyramid")
     args = ap.parse_args()
 
     device = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -43,9 +45,16 @@ def main():
     Path(args.out).mkdir(parents=True, exist_ok=True)
     H = C.HISTORY
 
-    for fi, key in ds.keys[: args.n]:
+    want = set(args.regimes.split(",")) if args.regimes else None
+    done = 0
+    for fi, key in ds.keys:
+        if done >= args.n:
+            break
         with h5py.File(ds.files[fi]) as f:
             d = load_trajectory(f, key)
+        if want and d["regime"] not in want:
+            continue
+        done += 1
         scene = {"offsets_list": d["offsets_list"], "mass": d["mass"],
                  "inertia": d["inertia_diag"]}
         init = {k: d[k][:H] for k in ("pos", "quat", "linvel", "angvel")}
