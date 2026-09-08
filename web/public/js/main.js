@@ -19,16 +19,35 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 document.body.appendChild(renderer.domElement);
+const CAM_HOME = { pos: [0.16, -0.26, 0.2], target: [0, 0, 0.015] };
 const controls = new OrbitControls(cam, renderer.domElement);
-controls.target.set(0, 0, 0.015);
-controls.maxDistance = 1.2;
-scene.add(new THREE.AmbientLight(0xffffff, 0.75));
-const sun = new THREE.DirectionalLight(0xffffff, 1.4);
-sun.position.set(0.6, -0.8, 1.4);
+controls.target.set(...CAM_HOME.target);
+controls.rotateSpeed = 0.55;
+controls.zoomSpeed = 0.9;
+controls.enableDamping = true;
+controls.dampingFactor = 0.12;
+controls.minDistance = 0.1;
+controls.maxDistance = 0.9;
+controls.minPolarAngle = 0.35;          // keep a usable elevated view
+controls.maxPolarAngle = 1.25;          // never near the floor plane
+const Q = new URLSearchParams(location.search);
+renderer.shadowMap.enabled = Q.get("shadows") !== "0";
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x2a2622, 0.5));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(0.35, -0.45, 0.9);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+sun.shadow.camera.near = 0.1; sun.shadow.camera.far = 3;
+sun.shadow.camera.left = sun.shadow.camera.bottom = -0.4;
+sun.shadow.camera.right = sun.shadow.camera.top = 0.4;
+sun.shadow.bias = -0.0005;
 scene.add(sun);
 const ground = new THREE.Mesh(
-  new THREE.CircleGeometry(0.5, 48),
-  new THREE.MeshStandardMaterial({ color: 0x1b1f26, roughness: 0.95 }));
+  new THREE.CircleGeometry(0.6, 64),
+  new THREE.MeshStandardMaterial({ color: 0x2c3038, roughness: 0.92 }));
+ground.receiveShadow = true;
 scene.add(ground);
 const grid = new THREE.GridHelper(1, 40, 0x2a2f38, 0x20242c);
 grid.rotation.x = Math.PI / 2;
@@ -36,13 +55,20 @@ grid.position.z = 0.0005;
 scene.add(grid);
 
 // ---------------------------------------------------------------- runtime
-let sim = null, groups = [], proxies = [];
+let sim = null, groups = [], proxies = [], loading = false;
+// Debug handle (?pause=1 starts frozen): lets a test harness inspect body
+// state and single-step the physics from the console.
+const dbg = { paused: Q.get("pause") === "1", stepOnce: false,
+  get sim() { return sim; }, get proxies() { return proxies; } };
+globalThis.physsplat = dbg;
 
 async function loadScene(name) {
+  loading = true;                      // physics loop idles until rebuilt
+  const packet = await (await fetch(`./packets/${name}.json`, { cache: "no-cache" })).json();
   groups.forEach((g) => scene.remove(g));
   proxies.forEach((p) => scene.remove(p));
   groups = []; proxies = [];
-  const packet = await (await fetch(`./packets/${name}.json`)).json();
+  prevState = currState = null;
   sim.packet = packet;
   sim.reset();
   packet.bodies.forEach((b, i) => {
@@ -52,7 +78,7 @@ async function loadScene(name) {
     geo.setAttribute("color", new THREE.Float32BufferAttribute(
       b.render_colors.flat().map((c) => c / 255), 3));
     let obj;
-    if (b.render_faces && b.render_faces.length) {
+    if (b.render_faces && b.render_faces.length && Q.get("points") !== "1") {
       // lit surface from the reconstruction's own triangles
       geo.setIndex(b.render_faces.flat());
       geo.computeVertexNormals();
@@ -65,8 +91,10 @@ async function loadScene(name) {
     }
     scene.add(obj);
     groups.push(obj);
+    // generous invisible pick volume: a real pencil is ~10 px wide on screen
+    // and grabbing it should not require pixel precision
     const cap = new THREE.Mesh(
-      new THREE.CapsuleGeometry(b.capsule.radius * 1.15, 2 * b.capsule.half, 4, 10),
+      new THREE.CapsuleGeometry(b.capsule.radius * 2.2, 2 * b.capsule.half, 4, 10),
       new THREE.MeshBasicMaterial({ visible: false }));
     // capsule geometry is y-aligned; rotate y onto the body-frame axis
     cap.quaternion.setFromUnitVectors(
@@ -78,6 +106,39 @@ async function loadScene(name) {
     proxies.push(wrap);
   });
   syncTransforms();
+  resetCamera();
+  loading = false;
+}
+
+/**
+ * A pencil pointing straight at the camera foreshortens into what looks like
+ * a pencil standing on end (a blind test read exactly that as a physics
+ * bug). Pick the viewing azimuth that stays furthest from every pencil's
+ * axis, so each pencil reads as a horizontal stick from the home view.
+ */
+function bestAzimuth(packet) {
+  const axes = packet.bodies.map((b) => {
+    const q = new THREE.Quaternion(...b.quat);
+    const a = new THREE.Vector3(...b.capsule.axis).applyQuaternion(q);
+    return Math.atan2(a.y, a.x);
+  });
+  let best = -Math.PI / 2 - 0.55, bestScore = -1;
+  for (let k = 0; k < 72; k++) {
+    const az = (k / 72) * 2 * Math.PI;
+    // score = smallest sin(angle to any pencil axis); axis sign is irrelevant
+    const s = Math.min(...axes.map((a) => Math.abs(Math.sin(az - a))));
+    if (s > bestScore + 1e-6) { bestScore = s; best = az; }
+  }
+  return best;
+}
+
+function resetCamera() {
+  const dist = 0.36, elev = 0.62;            // radians above the table
+  const az = sim?.packet?.bodies?.length ? bestAzimuth(sim.packet) : -1.0;
+  cam.position.set(dist * Math.cos(elev) * Math.cos(az),
+    dist * Math.cos(elev) * Math.sin(az), dist * Math.sin(elev));
+  controls.target.set(...CAM_HOME.target);
+  controls.update();
 }
 
 // Two physics states are kept so rendering can interpolate between them at
@@ -90,7 +151,7 @@ function snapshot(state) {
 }
 
 function syncTransforms() {
-  if (!sim) return;
+  if (!sim || proxies.length !== sim.B) return;   // mid scene switch
   prevState = currState ?? snapshot(sim.state);
   currState = snapshot(sim.state);
   stateTime = performance.now();
@@ -102,7 +163,7 @@ function syncTransforms() {
 
 const _qa = new THREE.Quaternion(), _qb = new THREE.Quaternion();
 function renderInterpolated() {
-  if (!currState) return;
+  if (!currState || groups.length !== currState.pos.length) return;
   const alpha = Math.min(1, (performance.now() - stateTime) / (stateDt * 1000));
   currState.pos.forEach((p, i) => {
     const q0 = prevState.pos[i];
@@ -144,10 +205,16 @@ renderer.domElement.addEventListener("pointermove", (e) => {
   const t = new THREE.Vector3();
   if (ray.ray.intersectPlane(plane, t)) drag.target.copy(t);
 });
+// Demo grab gains: stiffer than the data-generation spring (omega 12.6) so
+// a pencil follows the cursor within ~1-2 cm instead of ~6 cm of stretch.
+// Forces stay under the same 3 m g cap the model was trained with.
+const GRAB = { omega: 28, zeta: 1.0 };
+const POKE_MS = 260;    // a press shorter than this that moved is a flick
+
 renderer.domElement.addEventListener("pointerup", () => {
-  if (drag && drag.moved && performance.now() - drag.t0 < 160) {
+  if (drag && drag.moved && performance.now() - drag.t0 < POKE_MS) {
     const rt = sim.rt;
-    const dv = drag.target.clone().sub(drag.p0).multiplyScalar(2.0);
+    const dv = drag.target.clone().sub(drag.p0).multiplyScalar(3.0);
     const cap = rt.poke.delta_v[1];
     if (dv.length() > cap) dv.setLength(cap);
     const m = sim.mass[drag.body];
@@ -159,7 +226,9 @@ renderer.domElement.addEventListener("pointerup", () => {
   drag = null;
   controls.enabled = true;
 });
-$("reset").onclick = () => { sim?.reset(); syncTransforms(); };
+renderer.domElement.addEventListener("pointercancel", () => { drag = null; controls.enabled = true; });
+renderer.domElement.addEventListener("pointerleave", () => { if (drag) { drag = null; controls.enabled = true; } });
+$("reset").onclick = () => { sim?.reset(); prevState = currState = null; syncTransforms(); resetCamera(); };
 
 function worldGrabPoint(d) {
   return d.local.clone()
@@ -175,17 +244,21 @@ async function physicsLoop() {
   running = true;
   const rt = sim.rt;
   while (true) {
+    if (loading || (dbg.paused && !dbg.stepOnce)) {
+      await new Promise((r) => setTimeout(r, 30)); continue;
+    }
+    dbg.stepOnce = false;
     const t0 = performance.now();
     let act = [-1, null, null];
     if (pendingPoke && pendingPoke.left > 0) {
       act = [pendingPoke.body, pendingPoke.point, pendingPoke.force];
       pendingPoke.left--;
-    } else if (drag && performance.now() - drag.t0 >= 160) {
+    } else if (drag && performance.now() - drag.t0 >= POKE_MS) {
       const b = drag.body;
       const wp = worldGrabPoint(drag);
       const m = sim.mass[b];
-      const kp = m * rt.grab.omega ** 2;
-      const kd = 2 * rt.grab.zeta * m * rt.grab.omega;
+      const kp = m * GRAB.omega ** 2;
+      const kd = 2 * GRAB.zeta * m * GRAB.omega;
       const v = sim.state.linvel[b];
       const f = [
         kp * (drag.target.x - wp.x) - kd * v[0],
@@ -198,11 +271,17 @@ async function physicsLoop() {
     }
     try {
       await sim.step(...act);
-    } catch (e) { err(e); break; }
-    syncTransforms();
+      syncTransforms();
+    } catch (e) {
+      err(e);
+      await new Promise((r) => setTimeout(r, 500));   // never kill the loop
+      continue;
+    }
     stepMs = performance.now() - t0;
     stateDt = Math.max(rt.dt, stepMs / 1000);   // interpolation window
-    const wait = Math.max(0, rt.dt * 1000 - stepMs);
+    // always yield a real slice to the renderer: the physics kernels share
+    // the GPU with WebGL, and back-to-back steps starve the frame output
+    const wait = Math.max(12, rt.dt * 1000 - stepMs);
     await new Promise((res) => setTimeout(res, wait));
   }
   running = false;
@@ -238,7 +317,9 @@ async function physicsLoop() {
     const sel = $("scene");
     names.forEach((n) => sel.add(new Option(n, n)));
     sel.onchange = () => loadScene(sel.value);
-    await loadScene(names[0]);
+    const first = names.includes(q.get("scene")) ? q.get("scene") : names[0];
+    sel.value = first;
+    await loadScene(first);
     physicsLoop();
     setInterval(() => {
       const t = sim?.timing;

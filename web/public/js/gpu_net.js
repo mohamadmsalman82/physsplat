@@ -193,7 +193,16 @@ export class GpuNet {
   }
 
   #uniform(vals) {
-    return this.#buf(new Uint32Array(vals), GPUBufferUsage.UNIFORM);
+    // uniform contents are fixed per scene shape; cache instead of creating
+    // ~110 GPU buffers per step (they leaked and bogged the tab down)
+    this.uniforms ??= new Map();
+    const key = vals.join(",");
+    let b = this.uniforms.get(key);
+    if (!b) {
+      b = this.#buf(new Uint32Array(vals), GPUBufferUsage.UNIFORM);
+      this.uniforms.set(key, b);
+    }
+    return b;
   }
 
   #dispatch(enc, pipe, buffers, wgX, wgY = 1) {
@@ -282,6 +291,10 @@ export class GpuNet {
     const result = new Float32Array(read.getMappedRange().slice(0));
     read.unmap();
     for (const b of [nf, ef, sB, rB, pB, bpB, scB, read]) b.destroy();
+    if (this.uniforms && this.uniforms.size > 4096) {   // scene changed a lot
+      for (const b of this.uniforms.values()) b.destroy();
+      this.uniforms.clear();
+    }
     return result;
   }
 }

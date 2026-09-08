@@ -233,16 +233,37 @@ def build_body(cluster_verts, cluster_colors, faces=None) -> ReconBody | None:
                            faces=hull.faces, process=False)
     offsets = farthest_point_sample(
         trimesh.sample.sample_surface(surf, 20000, seed=1)[0])
+
+    # Render mesh: a clean capsule fitted to the body (axis = principal axis
+    # of least inertia = body-frame x), colored per vertex from the nearest
+    # reconstruction vertex. Raw reconstruction triangles were lumpy and,
+    # once split per body, full of holes; this keeps the real color bands
+    # (barrel, grip, eraser) on a watertight pencil-shaped surface that also
+    # matches the physics capsule proxy.
+    from scipy.spatial import cKDTree
+    body_verts = (cluster_verts - com) @ V
+    along = body_verts[:, 0]
+    radial = np.linalg.norm(body_verts[:, 1:], axis=1)
+    radius = float(np.clip(np.median(radial), 0.003, 0.012))
+    half = float(max(np.ptp(along) / 2 - radius, 0.01))
+    cap = trimesh.creation.capsule(radius=radius, height=2 * half, count=[24, 12])
+    cap.apply_translation(-cap.center_mass)
+    # capsule is built along z; rotate z -> x
+    cap.apply_transform(trimesh.transformations.rotation_matrix(
+        np.pi / 2, [0, 1, 0]))
+    tree = cKDTree(body_verts)
+    _, nn = tree.query(np.asarray(cap.vertices))
+    render_colors = np.asarray(cluster_colors)[nn]
+
     return ReconBody(
         offsets=offsets.astype(np.float32),
         pos=com.astype(np.float32),
         quat=quat.astype(np.float32),
         mass=float(mass),
         inertia_diag=np.abs(w).astype(np.float32),
-        verts=((cluster_verts - com) @ V).astype(np.float32),
-        faces=(np.asarray(faces, np.int32) if faces is not None
-               else np.zeros((0, 3), np.int32)),
-        colors=cluster_colors.astype(np.uint8),
+        verts=np.asarray(cap.vertices, np.float32),
+        faces=np.asarray(cap.faces, np.int32),
+        colors=render_colors.astype(np.uint8),
     )
 
 
@@ -306,6 +327,28 @@ def mesh_to_packet(mesh: trimesh.Trimesh) -> dict:
     spans = _body_spans(verts, lab0)
     if not spans:
         raise ValueError("no line-like bodies found; not a pencil scene?")
+
+    # Refine "up" from the pencils themselves: lying pencils span the table
+    # plane, so the ground normal is the direction least aligned with their
+    # axes. RANSAC on raw vertices picked a wrong plane on a 5-pencil scene
+    # (two pencils came out standing on end).
+    axes = []
+    for l in np.unique(lab0):
+        if l < 0:
+            continue
+        pts = verts[lab0 == l]
+        _, _, Vt = np.linalg.svd(pts - pts.mean(0), full_matrices=False)
+        axes.append(Vt[0])
+    if len(axes) >= 2:
+        A = np.stack(axes)
+        _, _, Vt = np.linalg.svd(A, full_matrices=True)
+        normal = Vt[-1]                       # least aligned with all axes
+        if normal[2] < 0:
+            normal = -normal
+        R, _ = Rotation.align_vectors([[0, 0, 1]], [normal])
+        verts = verts @ R.as_matrix().T
+        verts -= [verts[:, 0].mean(), verts[:, 1].mean(), 0]
+
     scale = KNOWN_LENGTH / max(spans)
     verts = verts * scale
     verts[:, 2] -= verts[:, 2].min()

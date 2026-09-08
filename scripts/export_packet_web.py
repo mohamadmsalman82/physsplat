@@ -17,6 +17,18 @@ import numpy as np
 from physsplat.eval.metrics import capsule_from_offsets
 
 
+def vivid(colors: np.ndarray, sat: float = 1.6, val: float = 1.15) -> np.ndarray:
+    """TripoSR vertex colors come back muted; restore saturation for display
+    only (the physics never sees color)."""
+    import colorsys
+    out = np.empty_like(colors)
+    for i, (r, g, b) in enumerate(np.asarray(colors, np.float64) / 255.0):
+        h, s, v = colorsys.rgb_to_hsv(r, g, b)
+        rr, gg, bb = colorsys.hsv_to_rgb(h, min(1.0, s * sat), min(1.0, v * val))
+        out[i] = (int(rr * 255), int(gg * 255), int(bb * 255))
+    return out
+
+
 def convert(pkl_path: str, out_dir: Path) -> str:
     with open(pkl_path, "rb") as f:
         d = pickle.load(f)
@@ -34,7 +46,7 @@ def convert(pkl_path: str, out_dir: Path) -> str:
             "capsule": {"axis": r3(axis, 4), "half": round(float(half), 4),
                         "radius": round(float(radius), 4)},
             "render_verts": r3(d["render"][b]["verts"], 4),
-            "render_colors": np.asarray(d["render"][b]["colors"], np.uint8).tolist(),
+            "render_colors": vivid(np.asarray(d["render"][b]["colors"], np.uint8)).tolist(),
             "render_faces": np.asarray(d["render"][b].get("faces", []), np.int32).tolist(),
         })
     out = {"name": name, "bodies": bodies}

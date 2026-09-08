@@ -44,6 +44,14 @@ export class PhysSim {
     this.angHist = Array.from({ length: H }, () => bs.map(() => [0, 0, 0]));
     this.quatHist = Array.from({ length: H }, () => bs.map((b) => [...b.quat]));
     this.bodyScalars = this.#bodyScalars();
+    this.restCount = null;
+    // Reconstructed poses overlap by up to ~1 cm (single-view depth error).
+    // Resolve that before the first frame instead of letting the guards
+    // jolt the pile apart in front of the viewer.
+    if (this.groundGuard && bs.length) {
+      for (let it = 0; it < 30; it++) { this.#capsuleGuard(); this.#groundGuard(); }
+      this.state.linvel = bs.map(() => [0, 0, 0]);
+    }
   }
 
   #bodyScalars() {
@@ -69,6 +77,17 @@ export class PhysSim {
    * lift the body out and cancel its downward velocity. Millimetre-scale
    * cleanup, never applied during evaluation.
    */
+  /** A body is "lying" when its center of mass is within ~2.5 radii of the
+   * floor: a pencil on its side. Standing on its tip is NOT lying, and the
+   * guards deliberately leave that case to gravity + the model, otherwise
+   * they pin the tip and the pencil balances upright forever (a blind test
+   * caught exactly that). */
+  #lying(b) {
+    const cap = this.packet.bodies[b].capsule;
+    const r = cap ? cap.radius : 0.01;
+    return this.state.pos[b][2] < 2.5 * r;
+  }
+
   #groundGuard() {
     for (let b = 0; b < this.B; b++) {
       const R = quatToMatrix(this.state.quat[b]);
@@ -79,7 +98,7 @@ export class PhysSim {
       }
       if (minz < 0) {
         this.state.pos[b][2] -= minz;
-        if (this.state.linvel[b][2] < 0) this.state.linvel[b][2] = 0;
+        if (this.state.linvel[b][2] < 0 && this.#lying(b)) this.state.linvel[b][2] = 0;
       }
     }
   }
@@ -147,7 +166,9 @@ export class PhysSim {
     this.restCount ??= new Int32Array(this.B);
     for (let b = 0; b < this.B; b++) {
       const v = this.state.linvel[b], w = this.state.angvel[b];
-      const slow = Math.hypot(...v) < 0.012 && Math.hypot(...w) < 0.35;
+      // only a body lying on the floor can settle; a standing or lifted
+      // body must keep obeying gravity
+      const slow = this.#lying(b) && Math.hypot(...v) < 0.012 && Math.hypot(...w) < 0.35;
       this.restCount[b] = slow ? this.restCount[b] + 1 : 0;
       if (this.restCount[b] >= 12) {
         v[0] = v[1] = v[2] = 0; w[0] = w[1] = w[2] = 0;
