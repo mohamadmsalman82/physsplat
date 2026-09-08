@@ -83,7 +83,7 @@ class LiveSim:
         if act_body >= 0:
             pt = torch.tensor(act_point, dtype=torch.float32, device=self.device)
             fc = torch.tensor(act_force, dtype=torch.float32, device=self.device)
-            sel = self.body_ids[:-1] == act_body
+            sel = self.body_ids[:len(self.body_ids_np)] == act_body  # real nodes only
             feat = action_feature(
                 parts[sel].detach().cpu().numpy(), pt.cpu().numpy(),
                 fc.cpu().numpy(), float(self.mass[act_body]))

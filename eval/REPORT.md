@@ -1,22 +1,23 @@
 # PhysSplat evaluation report
 
-_11 records; regenerated 2026-09-08 04:07_
+_12 records; regenerated 2026-09-08 06:33_
 
 ## Leaderboard (composite 0-100)
 
 | # | id | step | composite | stability | trans_150 | surface_pen | support_jaccard | change |
 |---|---|---|---|---|---|---|---|---|
 | 1 | exp1_rest_k24 | 150000 | 57.3 | 0.67 | 2.3cm | 1.91mm | 0.60 | rest_k24: {'K': 24, 'lr': 3e-06, 'rest_only': True} |
-| 2 | exp2_rollout_k12 | 150000 | 49.5 | 0.46 | 2.4cm | 1.96mm | 0.50 | rollout_k12: {'K': 12, 'lr': 3e-06} |
-| 3 | exp1_rollout_k8_long | 150000 | 47.2 | 0.46 | 2.3cm | 2.46mm | 0.50 | rollout_k8_long: {'K': 8, 'lr': 5e-06, 'steps': 6000} |
-| 4 | exp5_rollout_k8 | 150000 | 44.1 | 0.42 | 3.9cm | 2.27mm | 0.60 | rollout_k8: {'K': 8, 'lr': 5e-06} |
-| 5 | exp1_rollout_k4 | 150000 | 36.6 | 0.33 | 3.6cm | 3.46mm | 0.50 | rollout_k4: {'K': 4, 'lr': 1e-05} |
-| 6 | exp3_ang_w0.5 | 153000 | 34.0 | 0.29 | 3.7cm | 2.37mm | 0.30 | ang_w0.5: {'ang_weight': 0.5} |
-| 7 | exp4_polish_lr1e-5 | 153000 | 31.9 | 0.29 | 4.5cm | 2.63mm | 0.23 | polish_lr1e-5: {'lr': 1e-05, 'lr_final': 1e-05} |
-| 8 | run01@150000 | 150000 | 31.5 | 0.17 | 4.2cm | 2.68mm | 0.42 | main run, 150k review |
-| 9 | base@150000 | 150000 | 31.5 | 0.17 | 4.2cm | 2.68mm | 0.42 | baseline for improve loop |
-| 10 | exp2_noise_5e-4 | 153000 | 24.0 | 0.00 | 6.2cm | 2.28mm | 0.24 | noise_5e-4: {'noise_std': 0.0005} |
-| 11 | exp1_noise_2e-3 | 153000 | 22.5 | 0.12 | 19.1cm | 3.21mm | 0.33 | noise_2e-3: {'noise_std': 0.002} |
+| 2 | exp1_rest_k24_long | 150000 | 56.7 | 0.75 | 2.6cm | 1.60mm | 0.40 | rest_k24_long: K=24 rest-only, 6000 iters |
+| 3 | exp2_rollout_k12 | 150000 | 49.5 | 0.46 | 2.4cm | 1.96mm | 0.50 | rollout_k12: {'K': 12, 'lr': 3e-06} |
+| 4 | exp1_rollout_k8_long | 150000 | 47.2 | 0.46 | 2.3cm | 2.46mm | 0.50 | rollout_k8_long: {'K': 8, 'lr': 5e-06, 'steps': 6000} |
+| 5 | exp5_rollout_k8 | 150000 | 44.1 | 0.42 | 3.9cm | 2.27mm | 0.60 | rollout_k8: {'K': 8, 'lr': 5e-06} |
+| 6 | exp1_rollout_k4 | 150000 | 36.6 | 0.33 | 3.6cm | 3.46mm | 0.50 | rollout_k4: {'K': 4, 'lr': 1e-05} |
+| 7 | exp3_ang_w0.5 | 153000 | 34.0 | 0.29 | 3.7cm | 2.37mm | 0.30 | ang_w0.5: {'ang_weight': 0.5} |
+| 8 | exp4_polish_lr1e-5 | 153000 | 31.9 | 0.29 | 4.5cm | 2.63mm | 0.23 | polish_lr1e-5: {'lr': 1e-05, 'lr_final': 1e-05} |
+| 9 | run01@150000 | 150000 | 31.5 | 0.17 | 4.2cm | 2.68mm | 0.42 | main run, 150k review |
+| 10 | base@150000 | 150000 | 31.5 | 0.17 | 4.2cm | 2.68mm | 0.42 | baseline for improve loop |
+| 11 | exp2_noise_5e-4 | 153000 | 24.0 | 0.00 | 6.2cm | 2.28mm | 0.24 | noise_5e-4: {'noise_std': 0.0005} |
+| 12 | exp1_noise_2e-3 | 153000 | 22.5 | 0.12 | 19.1cm | 3.21mm | 0.33 | noise_2e-3: {'noise_std': 0.002} |
 
 ## Trend (evaluation order)
 
@@ -33,6 +34,7 @@ _11 records; regenerated 2026-09-08 04:07_
 | 2026-09-08 02:57 | exp1_rollout_k8_long | 150000 | 47.184 | 0.458 | 0.023 | 0.253 | 0.002 | 0.500 | 0.302 | 0.250 | 0.011 |
 | 2026-09-08 03:21 | exp2_rollout_k12 | 150000 | 49.461 | 0.458 | 0.024 | 0.201 | 0.002 | 0.500 | 0.279 | 0.250 | 0.008 |
 | 2026-09-08 04:07 | exp1_rest_k24 | 150000 | 57.281 | 0.667 | 0.023 | 0.187 | 0.002 | 0.600 | 0.229 | 0.208 | 0.008 |
+| 2026-09-08 06:33 | exp1_rest_k24_long | 150000 | 56.658 | 0.750 | 0.026 | 0.176 | 0.002 | 0.400 | 0.297 | 0.208 | 0.008 |
 
 ## Experiment decisions
 
