@@ -1390,6 +1390,22 @@ wheels = [
 ]
 
 [[package]]
+name = "onnx-ir"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "ml-dtypes" },
+    { name = "numpy" },
+    { name = "onnx" },
+    { name = "sympy" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d6/c2/61194cec0dbc5622273c0ebd592d37cc1dca0d7f1a744f02edd45ac905a3/onnx_ir-1.0.0.tar.gz", hash = "sha256:9e261f25fde8da9612ae5cb43b3b374d5ff469c04af0363cad588b2bb000b812", size = 163121, upload-time = "2026-08-11T14:49:46.895Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/91/cd/6d1637172eb59c7b18ac90ed089d1f599a11fe0e63b4db2d017f3bb38a32/onnx_ir-1.0.0-py3-none-any.whl", hash = "sha256:e578f0d608d3062866b48223616eb2d10a6d6d01f8b8faac596129034f483cc7", size = 185849, upload-time = "2026-08-11T14:49:45.524Z" },
+]
+
+[[package]]
 name = "onnxruntime"
 version = "1.29.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1422,6 +1438,23 @@ wheels = [
 ]
 
 [[package]]
+name = "onnxscript"
+version = "0.7.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "ml-dtypes" },
+    { name = "numpy" },
+    { name = "onnx" },
+    { name = "onnx-ir" },
+    { name = "packaging" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c4/3a/4d79bce3f460e0df7fed54a92ce80827f25da66511da368bb00783ad8d20/onnxscript-0.7.1.tar.gz", hash = "sha256:309fb86484b11fa4ded90dba580e0d63f1a0827588e521cecaf2eeddb46d6e86", size = 618160, upload-time = "2026-06-29T23:33:21.526Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dd/bd/a0c8e737b6afda10e42a597787d53d5b66e00268df6f59184701eeae37d9/onnxscript-0.7.1-py3-none-any.whl", hash = "sha256:544763b7fdef49940cdd9412ff5135cbae96d59ac6bc1921457f21280f40f4b7", size = 721970, upload-time = "2026-06-29T23:33:23.298Z" },
+]
+
+[[package]]
 name = "packaging"
 version = "26.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1445,6 +1478,7 @@ dependencies = [
     { name = "omegaconf" },
     { name = "onnx" },
     { name = "onnxruntime" },
+    { name = "onnxscript" },
     { name = "pillow" },
     { name = "pybullet" },
     { name = "rembg" },
@@ -1475,6 +1509,7 @@ requires-dist = [
     { name = "omegaconf", specifier = ">=2.3.1" },
     { name = "onnx", specifier = ">=1.22.0" },
     { name = "onnxruntime", specifier = ">=1.29.0" },
+    { name = "onnxscript", specifier = ">=0.7.1" },
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "pybullet", specifier = ">=3.2.7" },
     { name = "rembg", specifier = ">=2.0.83" },

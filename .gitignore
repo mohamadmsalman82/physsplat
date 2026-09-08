@@ -26,3 +26,4 @@ web/.next/
 # macOS
 .DS_Store
 third_party/
+web/public/model/

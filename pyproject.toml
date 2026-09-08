@@ -18,6 +18,7 @@ dependencies = [
     "omegaconf>=2.3.1",
     "onnx>=1.22.0",
     "onnxruntime>=1.29.0",
+    "onnxscript>=0.7.1",
     "pillow>=12.3.0",
     "pybullet>=3.2.7",
     "rembg>=2.0.83",
