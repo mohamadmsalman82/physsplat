@@ -23,18 +23,55 @@ from ..model.normalize import (
 )
 
 
+def segment_sum(x: torch.Tensor, ptr: torch.Tensor) -> torch.Tensor:
+    """Sum rows of x within segments [ptr[i], ptr[i+1]). x must be ordered
+    by segment. Deterministic under any threading, unlike ScatterND
+    reduction='add' in onnxruntime, which races on duplicate indices
+    (measured: 5e-4 run-to-run drift at 8k edges). float64 cumsum keeps the
+    boundary differences exact to ~1e-7 after the cast back."""
+    cs = torch.cumsum(x.double(), 0)
+    cs0 = torch.cat([torch.zeros(1, x.shape[1], dtype=cs.dtype, device=x.device), cs])
+    return (cs0[ptr[1:]] - cs0[ptr[:-1]]).to(x.dtype)
+
+
 class OnnxWrapper(torch.nn.Module):
-    """Fixed-signature wrapper: tensors in, (B,6) normalized residual out."""
+    """Export-side forward with race-free segmented aggregation.
+
+    Same weights as Simulator; only the aggregation changes. Host contract:
+      edges sorted by receiver ascending, seg_ptr (N+1) with
+      seg_ptr[i] = index of the first edge whose receiver >= i;
+      nodes ordered by body id ascending, body_ptr (B+1) likewise.
+    Returns (B, 6) normalized residuals.
+    """
 
     def __init__(self, sim: Simulator):
         super().__init__()
         self.sim = sim
 
-    def forward(self, node_feats, edge_feats, senders, receivers,
-                body_ids, body_scalars):
-        n_bodies = body_scalars.shape[0]
-        return self.sim(node_feats, edge_feats, senders, receivers,
-                        body_ids, n_bodies, body_scalars)
+    def forward(self, node_feats, edge_feats, senders, receivers, seg_ptr,
+                body_ids, body_ptr, body_scalars):
+        s = self.sim
+        h = s.node_enc(node_feats)
+        e = s.edge_enc(edge_feats)
+        for blk in s.blocks:
+            e = e + blk.edge_mlp(torch.cat([e, h[senders], h[receivers]], -1))
+            agg = segment_sum(e, seg_ptr)
+            h = h + blk.node_mlp(torch.cat([h, agg], -1))
+        pooled = segment_sum(h, body_ptr)
+        counts = (body_ptr[1:] - body_ptr[:-1]).to(h.dtype).clamp_min(1)[:, None]
+        return s.body_dec(torch.cat([pooled / counts, body_scalars], -1))
+
+
+def sort_for_export(senders, receivers, edge_feats, n_nodes, body_ids, n_bodies):
+    """Host-side ordering for the export contract (numpy in, numpy out)."""
+    import numpy as np
+    order = np.argsort(receivers, kind="stable")
+    r = receivers[order]
+    seg_ptr = np.searchsorted(r, np.arange(n_nodes + 1)).astype(np.int64)
+    assert np.all(np.diff(body_ids) >= 0), "nodes must be ordered by body id"
+    body_ptr = np.searchsorted(body_ids, np.arange(n_bodies + 1)).astype(np.int64)
+    return (senders[order].astype(np.int64), r.astype(np.int64),
+            edge_feats[order], seg_ptr, body_ptr)
 
 
 def export(checkpoint: str, out_dir: str) -> Path:
@@ -46,25 +83,29 @@ def export(checkpoint: str, out_dir: str) -> Path:
     wrapper = OnnxWrapper(model)
 
     N, E, B = 900, 8192, 5
+    import numpy as np
+    rng = np.random.default_rng(0)
+    bids = np.sort(rng.integers(0, B, N))
+    snd, rcv = rng.integers(0, N, E), rng.integers(0, N, E)
+    snd, rcv, ef, seg_ptr, body_ptr = sort_for_export(
+        snd, rcv, rng.standard_normal((E, 5)).astype(np.float32), N, bids, B)
     args = (
-        torch.randn(N, NODE_DIM),
-        torch.randn(E, 5),
-        torch.randint(0, N, (E,)),
-        torch.randint(0, N, (E,)),
-        torch.randint(0, B, (N,)),
+        torch.randn(N, NODE_DIM), torch.from_numpy(ef),
+        torch.from_numpy(snd), torch.from_numpy(rcv), torch.from_numpy(seg_ptr),
+        torch.from_numpy(bids.astype(np.int64)), torch.from_numpy(body_ptr),
         torch.randn(B, 4),
     )
     onnx_path = out / "simulator.onnx"
     torch.onnx.export(
         wrapper, args, str(onnx_path),
         input_names=["node_feats", "edge_feats", "senders", "receivers",
-                     "body_ids", "body_scalars"],
+                     "seg_ptr", "body_ids", "body_ptr", "body_scalars"],
         output_names=["residual_norm"],
         dynamic_axes={
             "node_feats": {0: "N"}, "edge_feats": {0: "E"},
-            "senders": {0: "E"}, "receivers": {0: "E"},
-            "body_ids": {0: "N"}, "body_scalars": {0: "B"},
-            "residual_norm": {0: "B"},
+            "senders": {0: "E"}, "receivers": {0: "E"}, "seg_ptr": {0: "N1"},
+            "body_ids": {0: "N"}, "body_ptr": {0: "B1"},
+            "body_scalars": {0: "B"}, "residual_norm": {0: "B"},
         },
         opset_version=18,
     )

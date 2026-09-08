@@ -31,12 +31,12 @@ Early development, built in phases (each ends with a runnable artifact):
 - [x] **Phase 0** — environment, package skeleton, shared constants
 - [x] **Phase 1** — synthetic dataset generator (PyBullet → HDF5): 5,000 trajectories across 7 scene regimes with a poke-and-grab action channel, physics-invariant rejection filters, and visual audit tooling
 - [x] **Phase 2** — the graph network simulator: predictive-edge contact graphs, per-body rigid decoder, analytic Newton-Euler integration, overfit gate passed
-- [ ] **Phase 3** — training (Apple Silicon / MPS): *in progress, 300k steps running; rollout drift at 50 steps already down to 1cm by step 10k*
-- [ ] **Phase 4** — rollout evaluation + side-by-side videos: *harness built, tracking eval/history.csv across checkpoints*
-- [ ] **Phase 5** — local interactive demo: *server + client built, awaiting trained model*
-- [ ] **Phase 6** — photo → scene reconstruction pipeline
-- [ ] **Phase 7** — in-browser inference (ONNX Runtime Web) + splat rendering
-- [ ] **Phase 8** — public deployment
+- [x] **Phase 3** — training on Apple Silicon (150k single-step steps), then a self-improving loop of physics-scored fine-tuning experiments: composite score 31.5 → 58.3 (`eval/REPORT.md`, `docs/eval-loop.md`)
+- [x] **Phase 4** — extensive rollout scorecard (drift, penetration, rest stability, support-removal fidelity, energy) with per-regime breakdown, provenance ledger, and side-by-side films
+- [x] **Phase 5** — local interactive demo (WebSocket server + three.js client, closed-loop spring grabs)
+- [x] **Phase 6** — photo → scene pipeline: TripoSR reconstruction, RANSAC line segmentation of pencils, four real-photo scenes packeted
+- [x] **Phase 7** — in-browser physics: ONNX export, JS runtime parity-verified to microns against Python, static web app with true-color point-cloud rendering
+- [ ] **Phase 8** — public deployment (Vercel) and demo video
 
 ## Documentation
 

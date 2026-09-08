@@ -129,28 +129,45 @@ export class PhysSim {
     const lastVel = vels[H - 1];
     const { senders, receivers } = buildEdges(parts, lastVel,
       rt.contact_radius, rt.dt);
+    // Export contract (race-free segmented aggregation): edges sorted by
+    // receiver with segment pointers; nodes ordered by body with body
+    // pointers. No edge padding needed here (that was for MPS kernels).
     const E = senders.length;
-    const Epad = Math.max(1, Math.ceil(E / rt.edge_bucket)) * rt.edge_bucket;
-    const s64 = new BigInt64Array(Epad), r64 = new BigInt64Array(Epad);
-    const ef = new Float32Array(Epad * 5);
     const efReal = edgeFeatures(parts, senders, receivers, this.bodyIds,
       rt.contact_radius);
-    ef.set(efReal);
-    for (let e = 0; e < E; e++) {
-      s64[e] = BigInt(senders[e]);
-      r64[e] = BigInt(receivers[e]);
+    const order = Array.from({ length: E }, (_, i) => i)
+      .sort((a, b) => receivers[a] - receivers[b] || a - b);
+    const s64 = new BigInt64Array(E), r64 = new BigInt64Array(E);
+    const ef = new Float32Array(E * 5);
+    order.forEach((o, e) => {
+      s64[e] = BigInt(senders[o]); r64[e] = BigInt(receivers[o]);
+      for (let k = 0; k < 5; k++) ef[5 * e + k] = efReal[5 * o + k];
+    });
+    const Nn = this.N + 1;                       // nodes incl. one dummy
+    const segPtr = new BigInt64Array(Nn + 1);
+    let ei = 0;
+    for (let i = 0; i <= Nn; i++) {
+      while (ei < E && Number(r64[ei]) < i) ei++;
+      segPtr[i] = BigInt(ei);
     }
-    for (let e = E; e < Epad; e++) { s64[e] = BigInt(this.N); r64[e] = BigInt(this.N); }
-    const bids64 = new BigInt64Array(this.N + 1);
-    for (let i = 0; i <= this.N; i++) bids64[i] = BigInt(this.bodyIds[i]);
+    const bids64 = new BigInt64Array(Nn);
+    for (let i = 0; i < Nn; i++) bids64[i] = BigInt(this.bodyIds[i]);
+    const bodyPtr = new BigInt64Array(this.B + 2);
+    let ni = 0;
+    for (let b = 0; b <= this.B + 1; b++) {
+      while (ni < Nn && this.bodyIds[ni] < b) ni++;
+      bodyPtr[b] = BigInt(ni);
+    }
 
     const T = this.ort.Tensor;
     const out = await this.session.run({
-      node_feats: new T("float32", nf, [this.N + 1, NODE_DIM]),
-      edge_feats: new T("float32", ef, [Epad, 5]),
-      senders: new T("int64", s64, [Epad]),
-      receivers: new T("int64", r64, [Epad]),
-      body_ids: new T("int64", bids64, [this.N + 1]),
+      node_feats: new T("float32", nf, [Nn, NODE_DIM]),
+      edge_feats: new T("float32", ef, [E, 5]),
+      senders: new T("int64", s64, [E]),
+      receivers: new T("int64", r64, [E]),
+      seg_ptr: new T("int64", segPtr, [Nn + 1]),
+      body_ids: new T("int64", bids64, [Nn]),
+      body_ptr: new T("int64", bodyPtr, [this.B + 2]),
       body_scalars: new T("float32", this.bodyScalars, [this.B + 1, 4]),
     });
     const pred = out.residual_norm.data; // (B+1, 6) normalized

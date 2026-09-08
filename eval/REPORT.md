@@ -1,23 +1,23 @@
 # PhysSplat evaluation report
 
-_12 records; regenerated 2026-09-08 06:33_
+_14 records; regenerated 2026-09-08 07:25_
 
 ## Leaderboard (composite 0-100)
 
 | # | id | step | composite | stability | trans_150 | surface_pen | support_jaccard | change |
 |---|---|---|---|---|---|---|---|---|
-| 1 | exp1_rest_k24 | 150000 | 57.3 | 0.67 | 2.3cm | 1.91mm | 0.60 | rest_k24: {'K': 24, 'lr': 3e-06, 'rest_only': True} |
-| 2 | exp1_rest_k24_long | 150000 | 56.7 | 0.75 | 2.6cm | 1.60mm | 0.40 | rest_k24_long: K=24 rest-only, 6000 iters |
-| 3 | exp2_rollout_k12 | 150000 | 49.5 | 0.46 | 2.4cm | 1.96mm | 0.50 | rollout_k12: {'K': 12, 'lr': 3e-06} |
-| 4 | exp1_rollout_k8_long | 150000 | 47.2 | 0.46 | 2.3cm | 2.46mm | 0.50 | rollout_k8_long: {'K': 8, 'lr': 5e-06, 'steps': 6000} |
-| 5 | exp5_rollout_k8 | 150000 | 44.1 | 0.42 | 3.9cm | 2.27mm | 0.60 | rollout_k8: {'K': 8, 'lr': 5e-06} |
-| 6 | exp1_rollout_k4 | 150000 | 36.6 | 0.33 | 3.6cm | 3.46mm | 0.50 | rollout_k4: {'K': 4, 'lr': 1e-05} |
-| 7 | exp3_ang_w0.5 | 153000 | 34.0 | 0.29 | 3.7cm | 2.37mm | 0.30 | ang_w0.5: {'ang_weight': 0.5} |
-| 8 | exp4_polish_lr1e-5 | 153000 | 31.9 | 0.29 | 4.5cm | 2.63mm | 0.23 | polish_lr1e-5: {'lr': 1e-05, 'lr_final': 1e-05} |
-| 9 | run01@150000 | 150000 | 31.5 | 0.17 | 4.2cm | 2.68mm | 0.42 | main run, 150k review |
-| 10 | base@150000 | 150000 | 31.5 | 0.17 | 4.2cm | 2.68mm | 0.42 | baseline for improve loop |
-| 11 | exp2_noise_5e-4 | 153000 | 24.0 | 0.00 | 6.2cm | 2.28mm | 0.24 | noise_5e-4: {'noise_std': 0.0005} |
-| 12 | exp1_noise_2e-3 | 153000 | 22.5 | 0.12 | 19.1cm | 3.21mm | 0.33 | noise_2e-3: {'noise_std': 0.002} |
+| 1 | exp1_mixed_k12 | 150000 | 58.3 | 0.79 | 2.1cm | 2.47mm | 0.60 | mixed_k12: {'K': 12, 'lr': 3e-06} |
+| 2 | exp1_rest_k24 | 150000 | 57.3 | 0.67 | 2.3cm | 1.91mm | 0.60 | rest_k24: {'K': 24, 'lr': 3e-06, 'rest_only': True} |
+| 3 | exp1_rest_k24_long | 150000 | 56.7 | 0.75 | 2.6cm | 1.60mm | 0.40 | rest_k24_long: K=24 rest-only, 6000 iters |
+| 4 | exp1_mixed_k12 | 150000 | 54.1 | 0.71 | 2.5cm | 2.29mm | 0.50 | mixed_k12: {'K': 12, 'lr': 3e-06} |
+| 5 | exp2_rollout_k12 | 150000 | 49.5 | 0.46 | 2.4cm | 1.96mm | 0.50 | rollout_k12: {'K': 12, 'lr': 3e-06} |
+| 6 | exp1_rollout_k8_long | 150000 | 47.2 | 0.46 | 2.3cm | 2.46mm | 0.50 | rollout_k8_long: {'K': 8, 'lr': 5e-06, 'steps': 6000} |
+| 7 | exp5_rollout_k8 | 150000 | 44.1 | 0.42 | 3.9cm | 2.27mm | 0.60 | rollout_k8: {'K': 8, 'lr': 5e-06} |
+| 8 | exp1_rollout_k4 | 150000 | 36.6 | 0.33 | 3.6cm | 3.46mm | 0.50 | rollout_k4: {'K': 4, 'lr': 1e-05} |
+| 9 | exp3_ang_w0.5 | 153000 | 34.0 | 0.29 | 3.7cm | 2.37mm | 0.30 | ang_w0.5: {'ang_weight': 0.5} |
+| 10 | exp4_polish_lr1e-5 | 153000 | 31.9 | 0.29 | 4.5cm | 2.63mm | 0.23 | polish_lr1e-5: {'lr': 1e-05, 'lr_final': 1e-05} |
+| 11 | run01@150000 | 150000 | 31.5 | 0.17 | 4.2cm | 2.68mm | 0.42 | main run, 150k review |
+| 12 | base@150000 | 150000 | 31.5 | 0.17 | 4.2cm | 2.68mm | 0.42 | baseline for improve loop |
 
 ## Trend (evaluation order)
 
@@ -35,6 +35,8 @@ _12 records; regenerated 2026-09-08 06:33_
 | 2026-09-08 03:21 | exp2_rollout_k12 | 150000 | 49.461 | 0.458 | 0.024 | 0.201 | 0.002 | 0.500 | 0.279 | 0.250 | 0.008 |
 | 2026-09-08 04:07 | exp1_rest_k24 | 150000 | 57.281 | 0.667 | 0.023 | 0.187 | 0.002 | 0.600 | 0.229 | 0.208 | 0.008 |
 | 2026-09-08 06:33 | exp1_rest_k24_long | 150000 | 56.658 | 0.750 | 0.026 | 0.176 | 0.002 | 0.400 | 0.297 | 0.208 | 0.008 |
+| 2026-09-08 06:59 | exp1_mixed_k12 | 150000 | 54.093 | 0.708 | 0.025 | 0.218 | 0.002 | 0.500 | 0.288 | 0.250 | 0.008 |
+| 2026-09-08 07:25 | exp1_mixed_k12 | 150000 | 58.307 | 0.792 | 0.021 | 0.208 | 0.002 | 0.600 | 0.273 | 0.250 | 0.008 |
 
 ## Experiment decisions
 
@@ -56,15 +58,19 @@ _12 records; regenerated 2026-09-08 06:33_
   deltas: composite +2.277, stability +0.000, trans_150 +0.001, surface_pen -0.001, support_jaccard +0.000
 - **exp1_rest_k24** (rest_k24: {'K': 24, 'lr': 3e-06, 'rest_only': True}) from exp2_rollout_k12: **ACCEPT** -- composite 49.5 -> 57.3 (accepted)  
   deltas: composite +7.820, stability +0.208, trans_150 -0.001, surface_pen -0.000, support_jaccard +0.100
+- **exp1_mixed_k12** (mixed_k12: {'K': 12, 'lr': 3e-06}) from exp1_rest_k24: **REJECT** -- composite 57.3 -> 54.1 (< margin 0.5)  
+  deltas: composite -3.189, stability +0.042, trans_150 +0.002, surface_pen +0.000, support_jaccard -0.100
+- **exp1_mixed_k12** (mixed_k12: {'K': 12, 'lr': 3e-06}) from exp1_rest_k24_long: **ACCEPT** -- composite 56.7 -> 58.3 (accepted)  
+  deltas: composite +1.649, stability +0.042, trans_150 -0.004, surface_pen +0.001, support_jaccard +0.200
 
-## Per-regime breakdown of leader `exp1_rest_k24`
+## Per-regime breakdown of leader `exp1_mixed_k12`
 
 | regime | n | trans_150 | stability | surface_pen |
 |---|---|---|---|---|
-| bundle | 3 | 0.9cm | 1.00 | 6.45mm |
-| crosshatch | 2 | 4.0cm | 1.00 | 5.95mm |
-| drop | 3 | 8.8cm | 0.00 | 0.00mm |
-| pile | 1 | 10.3cm | 0.00 | 0.00mm |
-| pyramid | 6 | 0.2cm | 0.83 | 2.44mm |
-| scattered | 5 | 0.8cm | 0.60 | 0.00mm |
-| stack | 4 | 0.6cm | 0.75 | 0.00mm |
+| bundle | 3 | 1.0cm | 1.00 | 3.82mm |
+| crosshatch | 2 | 4.2cm | 1.00 | 8.20mm |
+| drop | 3 | 8.5cm | 0.00 | 0.00mm |
+| pile | 1 | 8.3cm | 0.00 | 9.02mm |
+| pyramid | 6 | 0.2cm | 1.00 | 3.74mm |
+| scattered | 5 | 0.6cm | 1.00 | 0.00mm |
+| stack | 4 | 0.5cm | 0.75 | 0.00mm |
