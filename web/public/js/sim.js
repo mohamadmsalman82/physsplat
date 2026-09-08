@@ -84,6 +84,77 @@ export class PhysSim {
     }
   }
 
+  /**
+   * Capsule-capsule guard (design doc: analytic non-penetration cleanup).
+   * Every demo body carries a capsule proxy (axis, half length, radius).
+   * If two capsules overlap, push them apart along the closest-point
+   * direction (mass-weighted) and cancel the approaching velocity. The
+   * learned model does the contact physics; this only removes the residual
+   * overlap it leaves behind so pencils never visibly pass through each other.
+   */
+  #capsuleGuard() {
+    const bs = this.packet.bodies;
+    if (!bs.length || !bs[0].capsule) return;
+    const seg = (b) => {
+      const R = quatToMatrix(this.state.quat[b]);
+      const a = matVec(R, bs[b].capsule.axis);
+      const h = bs[b].capsule.half, p = this.state.pos[b];
+      return { p, a, h, r: bs[b].capsule.radius };
+    };
+    const segs = bs.map((_, b) => seg(b));
+    for (let i = 0; i < this.B; i++) for (let j = i + 1; j < this.B; j++) {
+      const A = segs[i], Bc = segs[j];
+      // closest points between segments p +/- h*a (clamped, standard form)
+      const r = [A.p[0] - Bc.p[0], A.p[1] - Bc.p[1], A.p[2] - Bc.p[2]];
+      const dot = (u, v) => u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+      const aa = dot(A.a, A.a), ee = dot(Bc.a, Bc.a), bb = dot(A.a, Bc.a);
+      const cc = dot(A.a, r), ff = dot(Bc.a, r);
+      const den = aa * ee - bb * bb;
+      let s = den > 1e-12 ? (bb * ff - cc * ee) / den : 0;
+      s = Math.max(-A.h, Math.min(A.h, s));
+      let t = (bb * s + ff) / ee;
+      t = Math.max(-Bc.h, Math.min(Bc.h, t));
+      s = Math.max(-A.h, Math.min(A.h, (bb * t - cc) / aa));
+      const ca = [A.p[0] + s * A.a[0], A.p[1] + s * A.a[1], A.p[2] + s * A.a[2]];
+      const cb = [Bc.p[0] + t * Bc.a[0], Bc.p[1] + t * Bc.a[1], Bc.p[2] + t * Bc.a[2]];
+      const d = [ca[0] - cb[0], ca[1] - cb[1], ca[2] - cb[2]];
+      const dist = Math.hypot(...d);
+      const pen = (A.r + Bc.r) - dist;
+      if (pen <= 0 || dist < 1e-9) continue;
+      const n = d.map((x) => x / dist);         // from j toward i
+      const mi = this.mass[i], mj = this.mass[j];
+      const wi = mj / (mi + mj), wj = mi / (mi + mj);
+      for (let k = 0; k < 3; k++) {
+        this.state.pos[i][k] += n[k] * pen * wi;
+        this.state.pos[j][k] -= n[k] * pen * wj;
+      }
+      // cancel approaching relative velocity along the normal
+      const vi = this.state.linvel[i], vj = this.state.linvel[j];
+      const vrel = dot([vi[0] - vj[0], vi[1] - vj[1], vi[2] - vj[2]], n);
+      if (vrel < 0) for (let k = 0; k < 3; k++) {
+        vi[k] -= n[k] * vrel * wi; vj[k] += n[k] * vrel * wj;
+      }
+    }
+  }
+
+  /**
+   * Settle damping (design doc: demo hygiene). A body that has been nearly
+   * at rest for a while gets its residual velocities zeroed, so the learned
+   * model's slow creep cannot accumulate on an untouched scene. Any real
+   * motion (a poke, a collision, a grab) immediately clears the counter.
+   */
+  #settle() {
+    this.restCount ??= new Int32Array(this.B);
+    for (let b = 0; b < this.B; b++) {
+      const v = this.state.linvel[b], w = this.state.angvel[b];
+      const slow = Math.hypot(...v) < 0.012 && Math.hypot(...w) < 0.35;
+      this.restCount[b] = slow ? this.restCount[b] + 1 : 0;
+      if (this.restCount[b] >= 12) {
+        v[0] = v[1] = v[2] = 0; w[0] = w[1] = w[2] = 0;
+      }
+    }
+  }
+
   particlesWorld() {
     const parts = new Float64Array(this.N * 3);
     let k = 0;
@@ -233,7 +304,7 @@ export class PhysSim {
       this.inertia, actBody, actPoint ?? [0, 0, 0], actForce ?? [0, 0, 0],
       this.B);
     stepBodies(this.state, residual, ext, rt.dt, rt.gravity);
-    if (this.groundGuard) this.#groundGuard();
+    if (this.groundGuard) { this.#groundGuard(); this.#capsuleGuard(); this.#settle(); }
     this.linHist.shift(); this.linHist.push(this.state.linvel.map((v) => [...v]));
     this.angHist.shift(); this.angHist.push(this.state.angvel.map((v) => [...v]));
     this.quatHist.shift(); this.quatHist.push(this.state.quat.map((q) => [...q]));

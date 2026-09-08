@@ -35,6 +35,7 @@ def convert(pkl_path: str, out_dir: Path) -> str:
                         "radius": round(float(radius), 4)},
             "render_verts": r3(d["render"][b]["verts"], 4),
             "render_colors": np.asarray(d["render"][b]["colors"], np.uint8).tolist(),
+            "render_faces": np.asarray(d["render"][b].get("faces", []), np.int32).tolist(),
         })
     out = {"name": name, "bodies": bodies}
     path = out_dir / f"{name}.json"

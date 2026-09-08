@@ -213,7 +213,10 @@ class ReconBody:
     colors: np.ndarray
 
 
-def build_body(cluster_verts, cluster_colors, faces_lookup=None) -> ReconBody | None:
+def build_body(cluster_verts, cluster_colors, faces=None) -> ReconBody | None:
+    """faces: (F, 3) indices into cluster_verts (the reconstruction's own
+    triangles restricted to this body) so the demo can render a lit surface
+    instead of a point cloud."""
     hull = trimesh.Trimesh(vertices=cluster_verts).convex_hull
     if hull.volume < 1e-8:
         return None
@@ -237,7 +240,8 @@ def build_body(cluster_verts, cluster_colors, faces_lookup=None) -> ReconBody | 
         mass=float(mass),
         inertia_diag=np.abs(w).astype(np.float32),
         verts=((cluster_verts - com) @ V).astype(np.float32),
-        faces=np.zeros((0, 3), np.int32),
+        faces=(np.asarray(faces, np.int32) if faces is not None
+               else np.zeros((0, 3), np.int32)),
         colors=cluster_colors.astype(np.uint8),
     )
 
@@ -312,11 +316,17 @@ def mesh_to_packet(mesh: trimesh.Trimesh) -> dict:
     # bodies look most like pencils: right length, right thickness.
     labels = _segment_auto(verts)
 
+    # per-body surface triangles: faces whose three vertices share the label
+    all_faces = np.asarray(m.faces)
     bodies = []
     for l in np.unique(labels):
         if l < 0:
             continue
-        b = build_body(verts[labels == l], colors[labels == l])
+        sel = labels == l
+        idx_map = -np.ones(len(verts), np.int64)
+        idx_map[sel] = np.arange(int(sel.sum()))
+        f = all_faces[sel[all_faces].all(1)]
+        b = build_body(verts[sel], colors[sel], idx_map[f])
         if b is not None and len(b.offsets) >= 40:
             bodies.append(b)
 
@@ -334,6 +344,6 @@ def mesh_to_packet(mesh: trimesh.Trimesh) -> dict:
         "verts_scaled": verts,
         "colors": colors,
         "render": [
-            {"verts": b.verts, "colors": b.colors} for b in bodies],
+            {"verts": b.verts, "colors": b.colors, "faces": b.faces} for b in bodies],
     }
     return packet

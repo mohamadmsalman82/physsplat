@@ -51,10 +51,20 @@ async function loadScene(name) {
       new THREE.Float32BufferAttribute(b.render_verts.flat(), 3));
     geo.setAttribute("color", new THREE.Float32BufferAttribute(
       b.render_colors.flat().map((c) => c / 255), 3));
-    const pts = new THREE.Points(geo, new THREE.PointsMaterial({
-      size: 0.0035, vertexColors: true }));
-    scene.add(pts);
-    groups.push(pts);
+    let obj;
+    if (b.render_faces && b.render_faces.length) {
+      // lit surface from the reconstruction's own triangles
+      geo.setIndex(b.render_faces.flat());
+      geo.computeVertexNormals();
+      obj = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+        vertexColors: true, roughness: 0.6, metalness: 0.05 }));
+      obj.castShadow = true;
+    } else {
+      obj = new THREE.Points(geo, new THREE.PointsMaterial({
+        size: 0.0035, vertexColors: true }));
+    }
+    scene.add(obj);
+    groups.push(obj);
     const cap = new THREE.Mesh(
       new THREE.CapsuleGeometry(b.capsule.radius * 1.15, 2 * b.capsule.half, 4, 10),
       new THREE.MeshBasicMaterial({ visible: false }));
@@ -70,13 +80,37 @@ async function loadScene(name) {
   syncTransforms();
 }
 
+// Two physics states are kept so rendering can interpolate between them at
+// display rate: physics runs at ~20-30 Hz, the screen at 60, and without
+// this every pencil visibly hops between steps.
+let prevState = null, currState = null, stateTime = 0, stateDt = 1 / 20;
+
+function snapshot(state) {
+  return { pos: state.pos.map((p) => [...p]), quat: state.quat.map((q) => [...q]) };
+}
+
 function syncTransforms() {
   if (!sim) return;
+  prevState = currState ?? snapshot(sim.state);
+  currState = snapshot(sim.state);
+  stateTime = performance.now();
   sim.state.pos.forEach((p, i) => {
-    groups[i].position.set(...p);
-    groups[i].quaternion.set(...sim.state.quat[i]);
     proxies[i].position.set(...p);
     proxies[i].quaternion.set(...sim.state.quat[i]);
+  });
+}
+
+const _qa = new THREE.Quaternion(), _qb = new THREE.Quaternion();
+function renderInterpolated() {
+  if (!currState) return;
+  const alpha = Math.min(1, (performance.now() - stateTime) / (stateDt * 1000));
+  currState.pos.forEach((p, i) => {
+    const q0 = prevState.pos[i];
+    groups[i].position.set(
+      q0[0] + (p[0] - q0[0]) * alpha, q0[1] + (p[1] - q0[1]) * alpha,
+      q0[2] + (p[2] - q0[2]) * alpha);
+    _qa.set(...prevState.quat[i]); _qb.set(...currState.quat[i]);
+    groups[i].quaternion.copy(_qa.slerp(_qb, alpha));
   });
 }
 
@@ -167,6 +201,7 @@ async function physicsLoop() {
     } catch (e) { err(e); break; }
     syncTransforms();
     stepMs = performance.now() - t0;
+    stateDt = Math.max(rt.dt, stepMs / 1000);   // interpolation window
     const wait = Math.max(0, rt.dt * 1000 - stepMs);
     await new Promise((res) => setTimeout(res, wait));
   }
@@ -225,5 +260,6 @@ addEventListener("resize", () => {
 (function render() {
   requestAnimationFrame(render);
   controls.update();
+  renderInterpolated();
   renderer.render(scene, cam);
 })();
