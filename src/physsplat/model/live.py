@@ -15,6 +15,7 @@ from .graph import build_edges, edge_features
 from .integrator import external_accels, quat_to_matrix, step
 
 EDGE_BUCKET = 4096
+NODE_BUCKET = 256   # pad node count so per-scene shapes don't multiply
 
 
 class LiveSim:
@@ -27,9 +28,14 @@ class LiveSim:
                         for o in scene["offsets_list"]]
         counts = np.array([len(o) for o in self.offsets])
         self.body_ids_np = np.repeat(np.arange(B), counts)
-        # permanent dummy node + body (MPS shape bucketing, see train.loop)
+        # Dummy nodes + dummy body (MPS shape bucketing, see train.loop):
+        # pad the node count up to a bucket multiple (at least one dummy)
+        # so scenes with different particle counts share kernel shapes.
+        N = len(self.body_ids_np)
+        self.n_pad = max(1, -(-(N + 1) // NODE_BUCKET) * NODE_BUCKET - N)
         self.body_ids = torch.tensor(
-            np.concatenate([self.body_ids_np, [B]]), device=device)
+            np.concatenate([self.body_ids_np, np.full(self.n_pad, B)]),
+            device=device)
         self.mass = torch.cat(
             [torch.tensor(scene["mass"], dtype=torch.float32),
              torch.tensor([0.01])]).to(device)
@@ -96,11 +102,11 @@ class LiveSim:
             [ef_np, np.zeros((E_pad - E, ef_np.shape[1]), np.float32)]),
             device=self.device)
 
-        zero3 = torch.zeros(1, 3, device=self.device)
+        zero3 = torch.zeros(self.n_pad, 3, device=self.device)
         batch = {
             "particles": torch.cat([parts, zero3]),
             "vel_hist": torch.cat(
-                [vel_hist, torch.zeros(1, C.HISTORY, 3, device=self.device)]),
+                [vel_hist, torch.zeros(self.n_pad, C.HISTORY, 3, device=self.device)]),
             "body_ids": self.body_ids,
             "dist_ground": torch.cat(
                 [parts[:, 2].clamp(0, C.CONTACT_RADIUS), zero3[:, 0]]),

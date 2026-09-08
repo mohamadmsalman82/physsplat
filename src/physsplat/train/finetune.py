@@ -106,6 +106,8 @@ def rollout_finetune(
                 sim.ang_hist = [v.detach() for v in sim.ang_hist]
                 sim.quat_hist = [q.detach() for q in sim.quat_hist]
         losses.append(total / K)
+        if device == "mps" and (it + 1) % 25 == 0:
+            torch.mps.empty_cache()   # per-scene shapes grow the kernel cache
         if (it + 1) % log_every == 0:
             print(f"ft step {it+1}/{steps} loss {np.mean(losses[-log_every:]):.4f} "
                   f"{log_every/(time.time()-t0):.1f} it/s", flush=True)
