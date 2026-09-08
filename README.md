@@ -4,12 +4,12 @@
 
 **Live demo: [physsplat.vercel.app](https://physsplat.vercel.app)** (physics runs entirely in your browser; drag a pencil to grab it, flick to poke)
 
-PhysSplat turns a single photograph of simple objects on a flat surface (blocks, pencils, erasers) into a fully interactive 3D simulation. The scene is reconstructed as 3D Gaussian Splats, decomposed into rigid bodies without supervision, and simulated by a graph neural network trained entirely on synthetic data — no hand-coded collision solver. You orbit the scene, poke objects with the mouse, and watch them topple, slide, and roll, with every physics step running client-side in the browser.
+PhysSplat turns a single photograph of simple objects on a flat surface (pencils today; the pipeline is object-agnostic) into a fully interactive 3D simulation. The scene is reconstructed to 3D, decomposed into rigid bodies without supervision, and simulated by a graph neural network trained entirely on synthetic data, with no hand-coded collision solver. You orbit the scene, grab and poke objects with the mouse, and watch them slide, pivot, and topple, with every physics step running client-side in the browser.
 
 ```
-photo ──► 3D Gaussian Splats ──► unsupervised object          ──► learned GNN ──► interactive
-          (TripoSR / LGM)         decomposition + particles        dynamics         WebGL demo
-          once per scene          once per scene                   60 Hz, in-browser (ONNX)
+photo ──► single-image 3D    ──► unsupervised object          ──► learned GNN ──► interactive
+          reconstruction         decomposition + particles        dynamics         three.js demo
+          (TripoSR)              once per scene                   in-browser, custom WebGPU kernels
 ```
 
 ## Why
@@ -33,12 +33,12 @@ Early development, built in phases (each ends with a runnable artifact):
 - [x] **Phase 0** — environment, package skeleton, shared constants
 - [x] **Phase 1** — synthetic dataset generator (PyBullet → HDF5): 5,000 trajectories across 7 scene regimes with a poke-and-grab action channel, physics-invariant rejection filters, and visual audit tooling
 - [x] **Phase 2** — the graph network simulator: predictive-edge contact graphs, per-body rigid decoder, analytic Newton-Euler integration, overfit gate passed
-- [x] **Phase 3** — training on Apple Silicon (150k single-step steps), then a self-improving loop of physics-scored fine-tuning experiments: composite score 31.5 → 58.3 (`eval/REPORT.md`, `docs/eval-loop.md`)
+- [x] **Phase 3** — training on Apple Silicon (150k single-step steps), then a self-improving loop of physics-scored fine-tuning experiments: composite score 31.5 → 61.0 (`eval/REPORT.md`, `docs/eval-loop.md`)
 - [x] **Phase 4** — extensive rollout scorecard (drift, penetration, rest stability, support-removal fidelity, energy) with per-regime breakdown, provenance ledger, and side-by-side films
 - [x] **Phase 5** — local interactive demo (WebSocket server + three.js client, closed-loop spring grabs)
 - [x] **Phase 6** — photo → scene pipeline: TripoSR reconstruction, RANSAC line segmentation of pencils, four real-photo scenes packeted
-- [x] **Phase 7** — in-browser physics: ONNX export, JS runtime parity-verified to microns against Python, static web app with true-color point-cloud rendering
-- [ ] **Phase 8** — public deployment (Vercel) and demo video
+- [x] **Phase 7** — in-browser physics: race-free ONNX export, JS runtime parity-verified to microns against Python, then a custom WebGPU backend (hand-written WGSL kernels, ~7x faster than ONNX Runtime Web) so a 4-5 pencil scene steps at 12-16 Hz on an M-series laptop
+- [x] **Phase 8** — public deployment on Vercel, plus a blind-tester loop: an independent agent plays the live demo, scores it harshly, and its findings drive the next round of fixes (`docs/demo-critic.md`)
 
 ## Documentation
 
@@ -54,10 +54,10 @@ src/physsplat/
   model/      graph builder, encode-process-decode GNN, SE(3) integrator
   train/      dataset, noise injection, training loop
   eval/       rollout metrics, comparison videos
-  recon/      photo → splats → bodies → physics particles
+  recon/      photo → 3D reconstruction → bodies → physics particles
   export/     ONNX export + Python/browser parity tests
 scripts/      runnable entry points (one per task)
-web/          Next.js app: splat renderer + client-side physics (Phase 7)
+web/          static three.js app + client-side physics (js/sim.js, js/gpu_net.js)
 docs/         design document and build tutorial (LaTeX + PDF)
 ```
 
