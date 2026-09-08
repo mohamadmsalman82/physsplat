@@ -46,6 +46,16 @@ CANDIDATES = [
      "low-lr polish of the same objective"),
     ("rollout_k8", "rollout", {"K": 8, "lr": 5e-6},
      "longer unroll after k4: longer-horizon consistency"),
+    # --- round 2, added from the report: every single-step continuation
+    # regressed after rollout fine-tuning; k4 then k8 were both monotone
+    # improvements, so push the same lever further (params may carry a
+    # per-candidate "steps" override)
+    ("rollout_k8_long", "rollout", {"K": 8, "lr": 5e-6, "steps": 6000},
+     "twice the k8 iterations: was the gain step-limited?"),
+    ("rollout_k12", "rollout", {"K": 12, "lr": 3e-6},
+     "deeper unroll (0.2 s): rest-creep develops over ~1 s"),
+    ("rollout_k16", "rollout", {"K": 16, "lr": 2e-6},
+     "deeper still, lower lr for stability of the unrolled gradient"),
 ]
 
 
@@ -63,6 +73,8 @@ def run_experiment(kind, params, parent_ckpt, out_dir, steps, device, data):
         train(data, str(out), **kw)
         return str(out / "latest.pt")
     model, norm, ck = load_model(parent_ckpt, device)
+    params = dict(params)
+    steps = params.pop("steps", steps)
     rollout_finetune(model, norm, data, steps, device, **params)
     path = out / "latest.pt"
     torch.save({"model": model.state_dict(), "step": ck["step"],
@@ -86,7 +98,17 @@ def main():
     ap.add_argument("--baseline-from-ledger", action="store_true",
                     help="reuse the ledger's most recent record for this base "
                          "instead of re-evaluating (crash recovery)")
+    ap.add_argument("--baseline-id", default=None,
+                    help="reuse the ledger record with this id as the baseline "
+                         "(continuing from an accepted experiment)")
+    ap.add_argument("--candidates", default=None,
+                    help="comma-separated candidate names to run, in order")
     args = ap.parse_args()
+    global CANDIDATES
+    if args.candidates:
+        want = args.candidates.split(",")
+        by_name = {c[0]: c for c in CANDIDATES}
+        CANDIDATES = [by_name[n] for n in want]
 
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     Path(args.out).mkdir(parents=True, exist_ok=True)
@@ -95,10 +117,15 @@ def main():
         shutil.copy(args.base, best_ckpt)
 
     base_step = torch.load(args.base, map_location="cpu")["step"]
-    best_id = f"base@{base_step}"
-    prior = [r for r in ledger.load()
-             if r.get("step") == base_step and r.get("n") == args.n
-             and r["id"].startswith("base@")] if args.baseline_from_ledger else []
+    best_id = args.baseline_id or f"base@{base_step}"
+    if args.baseline_id:
+        prior = [r for r in ledger.load() if r.get("id") == args.baseline_id]
+    elif args.baseline_from_ledger:
+        prior = [r for r in ledger.load()
+                 if r.get("step") == base_step and r.get("n") == args.n
+                 and r["id"].startswith("base@")]
+    else:
+        prior = []
     if prior:
         best = prior[-1]["agg"]
         print(f"== baseline (from ledger) composite {best['composite']:.1f} ==",
