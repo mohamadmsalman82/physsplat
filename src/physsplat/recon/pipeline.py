@@ -24,8 +24,13 @@ from scipy.spatial.transform import Rotation
 from ..common import constants as C
 from ..common.particles import farthest_point_sample
 
-PENCIL_DENSITY = 530.0        # kg/m^3 effective (docs/objects.md)
+# Effective density so a reconstructed pencil weighs about the real 6.2 g
+# (docs/objects.md): the rescaled hull is tapered and bumpy, so its volume
+# is ~75% of a 4.5 mm x 150 mm cylinder. Stays inside the training range
+# (DENSITY_RANGE 400-900) so mass and inertia remain in-distribution.
+PENCIL_DENSITY = 850.0
 KNOWN_LENGTH = 0.150          # m, BIC Matic Grip
+KNOWN_RADIUS = 0.0045         # m, between the 8-9 mm barrel and the 11 mm grip
 
 
 # ---------------------------------------------------------------- canonical
@@ -217,19 +222,40 @@ def build_body(cluster_verts, cluster_colors, faces=None) -> ReconBody | None:
     """faces: (F, 3) indices into cluster_verts (the reconstruction's own
     triangles restricted to this body) so the demo can render a lit surface
     instead of a point cloud."""
-    hull = trimesh.Trimesh(vertices=cluster_verts).convex_hull
-    if hull.volume < 1e-8:
+    hull0 = trimesh.Trimesh(vertices=cluster_verts).convex_hull
+    if hull0.volume < 1e-8:
         return None
-    com = hull.center_mass
-    mass = PENCIL_DENSITY * hull.volume
-    inertia = hull.moment_inertia * PENCIL_DENSITY   # about COM, world axes
-    w, V = np.linalg.eigh(inertia)
+    com0 = hull0.center_mass
+    w0, V = np.linalg.eigh(hull0.moment_inertia)   # principal axes, world
     if np.linalg.det(V) < 0:
         V[:, 0] *= -1                                # keep right-handed
-    quat = Rotation.from_matrix(V).as_quat()
-    world_offsets = np.asarray(hull.vertices) - com
-    # body frame = principal axes
-    surf = trimesh.Trimesh(vertices=world_offsets @ V,
+    body_verts = (cluster_verts - com0) @ V          # x = long axis
+
+    # Single-image reconstruction inflates thin objects: these pencils came
+    # out 5-8.5 mm in radius against a 4-4.5 mm barrel (docs/objects.md),
+    # thicker than any training pencil (3.5-5.5 mm) and visibly fat. The
+    # length is trusted (KNOWN_LENGTH scaling); the radius is set the same
+    # way, by scaling the cross-section about the axis to the known value.
+    # scale the outer radius (95th percentile: the grip and clip bumps set
+    # the convex hull, and the physics samples the hull), not the median
+    radial = np.linalg.norm(body_verts[:, 1:], axis=1)
+    r_out = float(np.percentile(radial, 95))
+    if r_out > 1e-4:
+        body_verts[:, 1:] *= KNOWN_RADIUS / r_out
+    hull = trimesh.Trimesh(vertices=body_verts).convex_hull
+    com_b = hull.center_mass
+    body_verts = body_verts - com_b
+    hull.apply_translation(-com_b)
+    mass = PENCIL_DENSITY * hull.volume
+    inertia_b = hull.moment_inertia * PENCIL_DENSITY  # about COM, body frame
+    w, U = np.linalg.eigh(inertia_b)                 # re-diagonalize
+    if np.linalg.det(U) < 0:
+        U[:, 0] *= -1
+    body_verts = body_verts @ U
+    R_world = V @ U
+    quat = Rotation.from_matrix(R_world).as_quat()
+    com = com0 + V @ com_b
+    surf = trimesh.Trimesh(vertices=np.asarray(hull.vertices) @ U,
                            faces=hull.faces, process=False)
     offsets = farthest_point_sample(
         trimesh.sample.sample_surface(surf, 20000, seed=1)[0])
@@ -241,10 +267,8 @@ def build_body(cluster_verts, cluster_colors, faces=None) -> ReconBody | None:
     # (barrel, grip, eraser) on a watertight pencil-shaped surface that also
     # matches the physics capsule proxy.
     from scipy.spatial import cKDTree
-    body_verts = (cluster_verts - com) @ V
     along = body_verts[:, 0]
-    radial = np.linalg.norm(body_verts[:, 1:], axis=1)
-    radius = float(np.clip(np.median(radial), 0.003, 0.012))
+    radius = KNOWN_RADIUS
     half = float(max(np.ptp(along) / 2 - radius, 0.01))
     cap = trimesh.creation.capsule(radius=radius, height=2 * half, count=[24, 12])
     cap.apply_translation(-cap.center_mass)

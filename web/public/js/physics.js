@@ -225,6 +225,92 @@ export function capsuleClosest(A, B) {
   return { dist, pen: A.r + B.r - dist, n, ca, cb, s, t };
 }
 
+// ---------------------------------------------------------------- support
+// Static-equilibrium bookkeeping shared by the pivot rule (sim.js) and the
+// diagnostics (diag.js): where a body is held up, and whether its centre of
+// mass sits over that support.
+
+/**
+ * Support points of body `b`: its particles within `floorTol` of the floor
+ * and the closest points to every other capsule within `gapTol`.
+ * parts: world particles (flat), [start, start+count) belong to b;
+ * segs: world capsules for all bodies.
+ */
+// Tolerances default to the model's contact radius (6 mm): the network
+// acts on anything that close, so anything that close is "support" as far
+// as the model is concerned. Tighter tests left a band where the model
+// held a body (edges exist) but no analytic rule applied (no support), and
+// a pencil hovered 5.5 mm above its neighbour for half a second.
+export function supportPoints(parts, start, count, segs, b, floorTol = 6e-3, gapTol = 6e-3) {
+  const points = [], capsule = [];
+  let floor = 0;
+  for (let i = start; i < start + count; i++)
+    if (parts[3 * i + 2] < floorTol) {
+      points.push([parts[3 * i], parts[3 * i + 1], parts[3 * i + 2]]); floor++;
+    }
+  for (let j = 0; j < segs.length; j++) {
+    if (j === b) continue;
+    const c = capsuleClosest(segs[b], segs[j]);
+    // a neighbour supports b only from below: its contact normal (j -> b)
+    // must point up. A pencil touched only by pencils lying on top of it
+    // was counted as supported and hovered with two others on its back.
+    if (-c.pen < gapTol && c.n[2] > 0.2) { points.push(c.ca); capsule.push(j); }
+  }
+  return { points, floor, capsule };
+}
+
+/**
+ * Horizontal distance from p to the convex hull of pts, and the 3D point
+ * on the hull boundary nearest to p (the hinge a tipping body rotates
+ * about: an edge of the support polygon, or a lone contact).
+ */
+export function distToHull2D(p, pts) {
+  if (!pts.length) return { dist: Infinity, nearest: null };
+  const P = pts.slice();
+  if (P.length === 1) return { dist: Math.hypot(p[0] - P[0][0], p[1] - P[0][1]), nearest: [...P[0]] };
+  // monotone chain hull in xy, keeping the 3D points
+  P.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [], upper = [];
+  for (const q of P) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop(); lower.push(q); }
+  for (let i = P.length - 1; i >= 0; i--) { const q = P[i]; while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop(); upper.push(q); }
+  const hull = lower.slice(0, -1).concat(upper.slice(0, -1));
+  const segNearest = (a, b) => {
+    const dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy;
+    const t = l2 > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2)) : 0;
+    const q = [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), a[2] + t * (b[2] - a[2])];
+    return { d: Math.hypot(p[0] - q[0], p[1] - q[1]), q };
+  };
+  if (hull.length < 3) {
+    const s = segNearest(P[0], P[P.length - 1]);
+    return { dist: s.d, nearest: s.q };
+  }
+  let inside = true, best = { d: Infinity, q: null };
+  for (let i = 0; i < hull.length; i++) {
+    const a = hull[i], b = hull[(i + 1) % hull.length];
+    if (cross(a, b, p) < 0) inside = false;
+    const s = segNearest(a, b);
+    if (s.d < best.d) best = s;
+  }
+  return { dist: inside ? 0 : best.d, nearest: best.q };
+}
+
+/**
+ * Is the centre of mass over the support? `tol` is the half-width a round
+ * contact effectively spans (a 6 mm pencil on a point contact is stable
+ * within about its radius). Also reports the support's spread and the
+ * hinge point (nearest point of the support polygon's boundary) for the
+ * pivot rule.
+ */
+export function supportAnalysis(com, points, tol = 6e-3) {
+  if (!points.length) return { n: 0, balanced: false, dist: Infinity, spread: 0, hinge: null };
+  let spread = 0;
+  for (let i = 0; i < points.length; i++) for (let j = i + 1; j < points.length; j++)
+    spread = Math.max(spread, Math.hypot(points[i][0] - points[j][0], points[i][1] - points[j][1]));
+  const { dist, nearest } = distToHull2D(com, points);
+  return { n: points.length, balanced: dist <= tol, dist, spread, hinge: nearest };
+}
+
 // ---------------------------------------------------------------- features
 
 export function actionFeature(parts, sel, point, force, mass, sigma) {

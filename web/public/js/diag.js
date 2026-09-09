@@ -17,7 +17,7 @@
  * per-step record the simulator keeps (model residual, external
  * accelerations, guard corrections). Nothing here is read from the screen.
  */
-import { capsuleClosest, capsuleWorld, quatToMatrix } from "./physics.js";
+import { capsuleClosest, capsuleWorld, quatToMatrix, supportAnalysis, supportPoints } from "./physics.js";
 
 const G = 9.81;
 // The model resolves contact at particle level with a 6 mm contact radius
@@ -93,18 +93,39 @@ export class Diagnostics {
       .map((p) => ({ other: p.i === i ? p.j : p.i, gap: p.gap, point: p.point }));
 
     const bodies = [];
+    // world particles, computed here so the recorder only needs state,
+    // offsets and capsules (the unit test drives it with a mock simulator)
+    const nAll = sim.offsets.reduce((a, o) => a + o.length, 0);
+    const partsAll = new Float64Array(nAll * 3);
+    {
+      let q = 0;
+      for (let i = 0; i < B; i++) {
+        const R = quatToMatrix(st.quat[i]), p = st.pos[i];
+        for (const o of sim.offsets[i]) {
+          partsAll[q++] = R[0] * o[0] + R[1] * o[1] + R[2] * o[2] + p[0];
+          partsAll[q++] = R[3] * o[0] + R[4] * o[1] + R[5] * o[2] + p[1];
+          partsAll[q++] = R[6] * o[0] + R[7] * o[1] + R[8] * o[2] + p[2];
+        }
+      }
+    }
+    let pStart = 0;
     for (let i = 0; i < B; i++) {
       const cap = caps[i], v = st.linvel[i], w = st.angvel[i], p = st.pos[i];
       const speed = hyp(v), angSpeed = hyp(w);
       // lowest / highest surface points from the physics particles (what the
       // model and the ground guard see), not the fitted capsule
       const R = quatToMatrix(st.quat[i]);
+      const nP = sim.offsets[i].length, start = pStart; pStart += nP;
       let lowest = Infinity, highest = -Infinity;
-      for (const o of sim.offsets[i]) {
-        const z = R[6] * o[0] + R[7] * o[1] + R[8] * o[2] + p[2];
+      for (let q = start; q < start + nP; q++) {
+        const z = partsAll[3 * q + 2];
         if (z < lowest) lowest = z;
         if (z > highest) highest = z;
       }
+      // static equilibrium: is the centre of mass over the support?
+      const rc = sim.rt.contact_radius ?? 6e-3;
+      const sp = supportPoints(partsAll, start, nP, caps, i, rc, rc);
+      const an = supportAnalysis(p, sp.points);
       const elevation = Math.asin(Math.min(1, Math.abs(cap.a[2]))) * 180 / Math.PI;
       const mine = pairsOf(i);
       const contacts = mine.filter((c) => c.gap < CONTACT_GAP);
@@ -119,8 +140,12 @@ export class Diagnostics {
       const I = sim.inertia[i], m = sim.mass[i];
       const KE = 0.5 * m * speed * speed +
         0.5 * (I[0] * wb[0] ** 2 + I[1] * wb[1] ** 2 + I[2] * wb[2] ** 2);
-      const resting = speed < REST_V && angSpeed < REST_W;
-      if (resting) {
+      // "resting" is the simulator's own verdict (settle held the body
+      // still) when the guard record exists; the speed test alone counted
+      // slow settling motion as rest and reported it as creep
+      const resting = last ? !!last.guard.settled[i] : (speed < REST_V && angSpeed < REST_W);
+      const snapped = last && last.guard.ground[i] < 0;   // settle closed a gap on purpose
+      if (resting && !snapped) {
         if (!this.restStart[i]) this.restStart[i] = { pos: [...p], axis: [...cap.a], step };
       } else this.restStart[i] = null;
       const rs = this.restStart[i];
@@ -137,7 +162,9 @@ export class Diagnostics {
         near: near.map((c) => c.other),
         penetration_mm: penetration * 1e3,
         supportedBy, supports,
-        unsupported: !contacts.length && lowest >= CONTACT_GAP,
+        unsupported: an.n === 0 && lowest >= CONTACT_GAP,   // nothing below it
+        support: { n: an.n, floor: sp.floor, capsule: sp.capsule, balanced: an.balanced,
+          dist_mm: an.dist === Infinity ? null : an.dist * 1e3, spread_mm: an.spread * 1e3 },
         resting, restingSteps: rs ? step - rs.step : 0,
         driftSinceRest_mm: rs ? hyp(sub(p, rs.pos)) * 1e3 : 0,
         rotSinceRest_deg: rs ? axisAngleDeg(cap.a, rs.axis) : 0,
@@ -220,6 +247,9 @@ export class Diagnostics {
       else if (b.elevation_deg > 4 && b.lowest < 3e-3 && !b.contacts.length && b.restingSteps >= 30)
         add("tilt_hold", id, "error", b.elevation_deg,
           `body ${id} rests tilted ${b.elevation_deg.toFixed(1)} deg with one end on the floor and nothing under the other`, { body: id });
+      if (b.support.n && !b.support.balanced && b.restingSteps >= 30 && b.stepsSinceAction > 30)
+        add("unbalanced_rest", id, "error", b.support.dist_mm,
+          `body ${id} rests with its centre of mass ${b.support.dist_mm.toFixed(1)} mm outside its support (${b.support.n} contact points, spread ${b.support.spread_mm.toFixed(0)} mm)`, { body: id });
       if (b.restingSteps >= 60 && b.driftSinceRest_mm > 2)
         add("creep", id, "warn", b.driftSinceRest_mm,
           `body ${id} drifted ${b.driftSinceRest_mm.toFixed(1)} mm while classified at rest`, { body: id });
@@ -238,7 +268,9 @@ export class Diagnostics {
         let flips = 0, prev = 0;
         for (let k = 29; k >= 0; k--) {
           const vz = this.frame(k).bodies[i].linvel[2];
-          if (Math.abs(vz) < 2e-3) continue;
+          // 15 mm/s is 0.25 mm per step: the smallest tremble a viewer can
+          // see; the model's residual noise alone flips sign at 5 mm/s
+          if (Math.abs(vz) < 15e-3) continue;
           if (prev && Math.sign(vz) !== prev) flips++;
           prev = Math.sign(vz);
         }
@@ -288,6 +320,9 @@ export class Diagnostics {
         elevation_deg: r3(b.elevation_deg, 1), minGap_mm: r3(b.minGap_mm, 1),
         groundContact: b.groundContact, contacts: b.contacts.map((c) => ({ other: c.other, gap_mm: r3(c.gap_mm, 1) })),
         supportedBy: b.supportedBy, supports: b.supports, unsupported: b.unsupported,
+        support: { n: b.support.n, floor: b.support.floor, capsule: b.support.capsule,
+          balanced: b.support.balanced, dist_mm: b.support.dist_mm == null ? null : r3(b.support.dist_mm, 1),
+          spread_mm: r3(b.support.spread_mm, 0) },
         penetration_mm: r3(b.penetration_mm, 1), groundPen_mm: r3(b.groundPen_mm, 1),
         resting: b.resting, restingSteps: b.restingSteps,
         driftSinceRest_mm: r3(b.driftSinceRest_mm, 1), rotSinceRest_deg: r3(b.rotSinceRest_deg, 1),
@@ -391,9 +426,15 @@ export class Diagnostics {
           minGap_mm: r3(z.minGap_mm, 1),
           contacts: z.contacts.map((c) => c.other), unsupported: z.unsupported, resting: z.resting } };
     });
-    const counts = {};
-    for (const e of this.eventsLog) if (e.type === "anomaly_start" && e.step >= first.step)
+    const counts = {}, episodes = [];
+    for (const e of this.eventsLog) if (e.type === "anomaly_start" && e.step >= first.step) {
       counts[e.key.split(":")[0]] = (counts[e.key.split(":")[0]] ?? 0) + 1;
+      const end = this.eventsLog.find((x) => x.type === "anomaly_end" && x.key === e.key && x.step > e.step);
+      const act = this.episodes.get(e.key);
+      episodes.push({ key: e.key, start_step: e.step, severity: e.severity,
+        steps: end ? end.steps : (act ? this.sim.stepCount - act.startStep : null),
+        peak: r3(end ? end.peak : (act ? act.peak : 0), 2), ongoing: !end });
+    }
     let actionSteps = 0, tSum = 0, tN = 0;
     for (let k = 0; k < n; k++) {
       const f = this.frame(k);
@@ -402,7 +443,7 @@ export class Diagnostics {
     }
     return { steps: n, from_step: first.step, to_step: lastF.step, actionSteps,
       meanStep_ms: tN ? r3(tSum / tN, 1) : null, bodies, anomalyStarts: counts,
-      active: this.check() };
+      episodes, active: this.check() };
   }
 
   export({ last = this.count } = {}) {
@@ -457,6 +498,10 @@ export class Probes {
     if (reset) this.dbg.resetScene();
     this.dbg.paused = false;
     await this.diag.waitSteps(2);
+    // the page runs a few hidden settling-in steps after a reset; measure
+    // from the state the viewer actually sees
+    while ((this.dbg.preroll ?? 0) > 0) await this.diag.waitSteps(1);
+    await this.diag.waitSteps(2);
   }
 
   /** Watch the scene untouched. */
@@ -465,7 +510,7 @@ export class Probes {
     const start = this.diag.frame(0);
     await this.diag.waitSteps(steps);
     const s = this.diag.summary(steps);
-    return { probe: "rest", steps, bodies: s.bodies, anomalyStarts: s.anomalyStarts,
+    return { probe: "rest", steps, bodies: s.bodies, anomalyStarts: s.anomalyStarts, episodes: s.episodes,
       active: s.active, verdict: this.#verdict(s, { maxDrift_mm: 1, maxRot_deg: 1 }) };
   }
 
@@ -513,7 +558,7 @@ export class Probes {
         contacts: atRelease.bodies[body].contacts.map((c) => c.other) },
       others: otherMoves, after_release: after,
       maxPenetration_mm: r3(Math.max(...during.bodies.map((b) => b.maxPenetration_mm)), 1),
-      anomalyStarts: during.anomalyStarts, active: during.active,
+      anomalyStarts: during.anomalyStarts, episodes: during.episodes, active: during.active,
       samples: samples.filter((_, i) => i % 5 === 0),
     };
   }
@@ -587,7 +632,7 @@ export class Probes {
   }
 
   /** Flick: an impulse of `dv` m/s along `dir` at the grab point. */
-  async poke(body, { dir = [1, 0, 0], dv = 0.2, at = "center", settle = 120, reset = true } = {}) {
+  async poke(body, { dir = [1, 0, 0], dv = 0.3, at = "center", settle = 120, reset = true } = {}) {
     await this.#prepare(reset);
     const rt = this.sim.rt, m = this.sim.mass[body];
     const n = hyp(dir); const u = dir.map((x) => x / n);
@@ -614,7 +659,7 @@ export class Probes {
       rotation_deg: r3(axisAngleDeg(fin.bodies[body].axis, before.bodies[body].axis), 1),
       others: s.bodies.filter((b) => b.id !== body).map((b) => ({ id: b.id, displacement_mm: b.displacement_mm })),
       maxPenetration_mm: r3(Math.max(...s.bodies.map((b) => b.maxPenetration_mm)), 1),
-      anomalyStarts: s.anomalyStarts, active: s.active,
+      anomalyStarts: s.anomalyStarts, episodes: s.episodes, active: s.active,
     };
   }
 
@@ -654,13 +699,20 @@ export class Probes {
     const after = await this.#watchRelease(body, settle);
     return { probe: "drop", body, height, ...after,
       fall_time_ratio: after.fall_time_s && after.analytic_fall_s ? r3(after.fall_time_s / after.analytic_fall_s, 2) : null,
-      anomalyStarts: this.diag.summary(settle).anomalyStarts };
+      anomalyStarts: this.diag.summary(settle).anomalyStarts,
+      episodes: this.diag.summary(settle).episodes };
   }
 
   /** Run the standard battery and return every report plus a tally. */
   async all({ log = console.log } = {}) {
     const B = this.sim.B, out = {};
-    const top = this.diag.frame(0)?.bodies.reduce((a, b) => (b.height > a.height ? b : a)).id ?? 0;
+    // the pencil to pick up: highest of those carrying nothing (a pencil
+    // pinned under two others cannot be lifted at the trained force cap,
+    // and that is a fact about the pile, not the physics)
+    const f0 = this.diag.frame(0);
+    const free = f0 ? f0.bodies.filter((b) => !b.supports.length) : [];
+    const pool = free.length ? free : (f0?.bodies ?? []);
+    const top = pool.reduce((a, b) => (b.height > a.height ? b : a), pool[0])?.id ?? 0;
     const steps = [
       ["rest", () => this.rest()],
       ["lift", () => this.lift(top)],

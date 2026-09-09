@@ -13,6 +13,7 @@ pipeline. Photos of the actual pencils pending (re-send as JPEG/PNG).
 | Diameter | ~11 mm at grip, ~8-9 mm barrel | BIC Matic Grip spec |
 | Mass | 6.2 g | BIC Matic Grip spec |
 | Effective density | ~530 kg/m^3 | 6.2 g over solid-cylinder volume (d=10, L=150) |
+| Reconstruction density | 850 kg/m^3 | `recon/pipeline.py`: the rescaled hull (outer radius 4.5 mm, tapered) has ~75% of that cylinder's volume, so 850 lands near 6.2 g and stays inside the training range |
 | Aspect ratio | ~14-15 : 1 | within the 15:1 datagen cap, barely |
 | Barrel material | molded plastic, often translucent/frosted | recon risk, see below |
 | Grip | rubber sleeve near tip | non-uniform friction along the body |

@@ -67,6 +67,7 @@ const dbg = {
   scriptPoke: null,    // {body, point, force, left}: a poke driven by a probe
   get sim() { return sim; }, get proxies() { return proxies; },
   get diag() { return diag; }, probe: null,
+  get preroll() { return preroll; },
   resetScene() { resetScene(); },
   state() { return diag?.snapshot(); },
   // Non-blocking probe runner for harnesses whose eval calls time out:
@@ -145,8 +146,15 @@ async function loadScene(name) {
   });
   syncTransforms();
   resetCamera();
+  // A reconstructed pile is not exactly in equilibrium (single-view depth
+  // error), and the physics rules move it into one during the first few
+  // steps. Run those steps before showing motion, so the scene appears
+  // already settled instead of twitching on load.
+  preroll = PREROLL_STEPS;
   loading = false;
 }
+const PREROLL_STEPS = 24;
+let preroll = 0;
 
 /**
  * A pencil pointing straight at the camera foreshortens into what looks like
@@ -226,11 +234,20 @@ renderer.domElement.addEventListener("pointerdown", (e) => {
   if (!hits.length) return;
   controls.enabled = false;
   const body = hits[0].object.parent.userData.body;
-  // grab point in body frame, so it rides the body
+  // grab point in body frame, so it rides the body. Attach ON the pencil's
+  // axis: the pick volume is wider than the pencil, and a spring pulling
+  // 12 mm off the axis of a body with 2e-7 kg m^2 of axial inertia spun it
+  // to 100-280 rad/s (blind test round 3). A fingertip pinch does not
+  // torque a pencil about its own axis either.
   const p = hits[0].point;
   const inv = proxies[body].quaternion.clone().invert();
   const local = p.clone().sub(proxies[body].position).applyQuaternion(inv);
-  drag = { body, local, target: p.clone(), p0: p.clone(),
+  const cap = sim.packet.bodies[body].capsule;
+  const axis = new THREE.Vector3(...cap.axis).normalize();
+  const along = THREE.MathUtils.clamp(local.dot(axis), -cap.half, cap.half);
+  local.copy(axis).multiplyScalar(along);
+  const attach = local.clone().applyQuaternion(proxies[body].quaternion).add(proxies[body].position);
+  drag = { body, local, target: attach.clone(), p0: attach.clone(),
     t0: performance.now(), moved: false };
   diag?.event("pointer_down", { body, local: local.toArray().map((x) => +x.toFixed(4)) });
 });
@@ -248,12 +265,17 @@ renderer.domElement.addEventListener("pointermove", (e) => {
 // a pencil follows the cursor within ~1-2 cm instead of ~6 cm of stretch.
 // Forces stay under the same 3 m g cap the model was trained with.
 const GRAB = { omega: 28, zeta: 1.0 };
-const POKE_MS = 260;    // a press shorter than this that moved is a flick
+const POKE_MS = 350;    // a press shorter than this that moved is a flick
 
 renderer.domElement.addEventListener("pointerup", () => {
   if (drag && drag.moved && performance.now() - drag.t0 < POKE_MS) {
     const rt = sim.rt;
-    const dv = drag.target.clone().sub(drag.p0).multiplyScalar(3.0);
+    // flick strength from cursor speed: a 0.2 m/s impulse over the trained
+    // 3-step window is only a 4 m/s^2 push, under the friction a pencil on
+    // a pile resists, so an ordinary flick should reach the trained
+    // maximum (0.3 m/s)
+    const held = Math.max(0.05, (performance.now() - drag.t0) / 1000);
+    const dv = drag.target.clone().sub(drag.p0).multiplyScalar(2.0 / held);
     const cap = rt.poke.delta_v[1];
     if (dv.length() > cap) dv.setLength(cap);
     const m = sim.mass[drag.body];
@@ -280,6 +302,7 @@ function resetScene() {
   diag?.reset("reset");
   syncTransforms();
   resetCamera();
+  preroll = PREROLL_STEPS;
 }
 $("reset").onclick = resetScene;
 
@@ -292,7 +315,10 @@ function worldGrabPoint(d) {
 /** Spring-damper grab force toward `target` for the grab point `wp`
  * (arrays), with gravity feed-forward so a held pencil sits at the cursor
  * instead of sagging g/omega^2 = 12.5 mm below it (measured by the lift
- * probe). Still capped at the force the model was trained with. */
+ * probe). Capped at the force the model was trained with, and cut to a
+ * third while the capsule guard is pushing the held body out of another:
+ * at 3 m g the spring drove a held pencil 9 mm into its neighbour every
+ * step and the guard shoved it back (blind test round 3). */
 function springForce(body, wp, target) {
   const rt = sim.rt, m = sim.mass[body];
   const kp = m * GRAB.omega ** 2;
@@ -302,14 +328,15 @@ function springForce(body, wp, target) {
     kp * (target[0] - wp[0]) - kd * v[0],
     kp * (target[1] - wp[1]) - kd * v[1],
     kp * (target[2] - wp[2]) - kd * v[2] + m * rt.gravity];
-  const cap = rt.grab.force_cap * m * rt.gravity;
+  const blocked = (sim.last?.guard.capsule[body] ?? 0) > 1e-3;
+  const cap = rt.grab.force_cap * m * rt.gravity * (blocked ? 0.34 : 1);
   const fn = Math.hypot(...f);
   if (fn > cap) for (let k = 0; k < 3; k++) f[k] *= cap / fn;
   return f;
 }
 
 // ------------------------------------------------------------ physics loop
-let pendingPoke = null, stepMs = 0, running = false;
+let pendingPoke = null, stepMs = 0, running = false, lastStepAt = performance.now();
 
 async function physicsLoop() {
   if (running) return;
@@ -345,6 +372,10 @@ async function physicsLoop() {
     try {
       await sim.step(...act);
       diag?.record(actInfo);
+      if (preroll > 0) {
+        if (--preroll === 0) { prevState = currState = null; syncTransforms(); }
+        continue;                       // no render of the settling-in steps
+      }
       syncTransforms();
     } catch (e) {
       err(e);
@@ -352,6 +383,8 @@ async function physicsLoop() {
       continue;
     }
     stepMs = performance.now() - t0;
+    lastStepAt = performance.now();
+    $("err").textContent = "";                    // a completed step clears a stale error
     stateDt = Math.max(rt.dt, stepMs / 1000);   // interpolation window
     // always yield a real slice to the renderer: the physics kernels share
     // the GPU with WebGL, and back-to-back steps starve the frame output
@@ -401,9 +434,14 @@ async function physicsLoop() {
       const detail = t ? ` [${t.backend}: features ${t.features_ms.toFixed(0)} | graph ` +
         `${t.graph_ms.toFixed(0)} | net ${t.net_ms.toFixed(0)} ms; ` +
         `N=${t.N} E=${t.E}]` : "";
+      // a tester once paused the physics from the console and read the
+      // resulting silence as a hang; say so, and flag a real stall
+      const since = performance.now() - lastStepAt;
+      const state = dbg.paused ? " | PAUSED (physsplat.paused)"
+        : (!loading && since > 3000 ? ` | PHYSICS STALLED ${(since / 1000).toFixed(0)} s` : "");
       $("stats").textContent =
         `model step ${runtime.step} | physics ${stepMs.toFixed(0)} ms/step ` +
-        `(${(1000 / Math.max(stepMs, 1)).toFixed(0)} Hz capable)${detail}`;
+        `(${(1000 / Math.max(stepMs, 1)).toFixed(0)} Hz capable)${detail}${state}`;
     }, 500);
   } catch (e) { err(e); }
 })();

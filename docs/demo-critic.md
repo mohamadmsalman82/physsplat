@@ -117,6 +117,63 @@ now reach the floor at the true speed, and the model's landing response
 is softer than PyBullet's. The rule is honest physics, so it stays; the
 landing response is the model's problem to fix, not the rule's.
 
-## Round 3
+## Round 3 (2026-09-08): first blind tester with the diagnostics API
 
-Pending: a fresh blind tester with the diagnostics API in its brief.
+Tested the build deployed at `7751d95` (diagnostics, free-flight rule,
+settle-hold, grab feed-forward) in a hidden tab, 194 tool calls, all four
+scenes, mouse drags plus probes.
+
+| Visuals | Physics | Interaction | Robustness | Overall |
+|---|---|---|---|---|
+| 4 | 2 | 3 | 3 | 3 |
+
+Its ranked findings, with what each turned out to be:
+
+1. **Mouse grabs spun pencils to 100-280 rad/s.** Real and new: the pick
+   volume is 2.2x the pencil, so the spring attached up to 13 mm off the
+   axis of a body with 2e-7 kg m^2 axial inertia. The probes attach on the
+   axis and never saw it. Fix: attach on the axis; 60 rad/s and 3 m/s caps.
+2. **Pencils climbed into standing poses after a nudge and stayed.** The
+   model reads any nearby contact as support (residual +9.5 to +10.5) and
+   the guard turned residual penetration into upward displacement. Fix:
+   support is now "from below" only, a body with nothing below it falls
+   (free-flight rule), and the pivot rule tips any body whose centre of
+   mass is outside its support polygon. Detectors `tilt_hold` and
+   `unbalanced_rest`.
+3. **Piles hovered at load** (a pencil 10.8 mm up with nothing under it,
+   carrying two others). Same cause as 2; the tester's own reading of
+   `supportedBy: []` was exactly the missing rule.
+4. **"Physics loop hangs silently after a drag."** Not reproduced. Its own
+   log shows zero steps during a 5 s hold on a scene whose step counter had
+   just been reset, and `physsplat.paused = true` was in its toolkit. The
+   HUD now says PAUSED when the physics is paused and PHYSICS STALLED after
+   3 s without a step, so that reading cannot happen again.
+5. **Collisions interpenetrated up to 9.2 mm while a held pencil was pushed
+   into another.** Real: at 3 m g the spring drove the pencil 8 mm into the
+   neighbour per step and the guard shoved it back. Fix: the grab force
+   drops to a third while the guard is pushing the held body out.
+6. **The loader moved pencils 5-6 cm sideways** (IMG_8504). Real: overlaps
+   were resolved along contact normals for 30 iterations and the cascade
+   spread the pile. Fix: overlaps are resolved by lifting the upper body
+   straight up (heights are what the reconstruction gets wrong), and the
+   first 24 steps run before anything is drawn.
+7. **Rest was a fight between model and guard** (guard totals 34-73 mm per
+   300 steps with zero displacement). Cosmetic: settle restored the pose
+   after the guard's push, and the record kept the push. Now zeroed.
+8. **Grab tracking 15-46 mm when touching anything.** Mostly the off-axis
+   attach (1) and the trained force cap. Re-measure.
+9. **Pokes weak, flicks logged at 0.007-0.02 m/s.** Flick strength now comes
+   from cursor speed and reaches the trained maximum easily.
+10. **Reset threw `TypeError ... 'residual'`.** Fixed before the report
+    landed (a reset during an in-flight GPU step); a completed step now
+    clears the HUD error line.
+
+Also from this round: the reconstructed pencils were 10-17 mm thick against
+an 8-9 mm real barrel and 7-11 mm training pencils. The pipeline now scales
+each pencil's cross-section to the known radius (4.5 mm outer) and its
+density to the real 6.2 g; that puts the photo scenes back inside the
+training distribution for radius, mass and inertia.
+
+## Round 4
+
+Pending.

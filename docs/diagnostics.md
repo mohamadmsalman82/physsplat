@@ -46,13 +46,19 @@ when it stops; both are logged as events with duration and peak.
 | `creep:<b>` | classified at rest for 60 steps yet drifted more than 2 mm from where it stopped |
 | `creep_rot:<b>` | same, rotated more than 3 degrees |
 | `penetration:<i>-<j>` | capsule overlap deeper than 2 mm (error above 5 mm) |
-| `jitter:<b>` | vertical velocity changed sign more than 8 times in 30 steps at amplitudes above 2 mm/s |
+| `jitter:<b>` | vertical velocity changed sign more than 8 times in 30 steps at amplitudes above 15 mm/s (a visible tremble) |
+| `unbalanced_rest:<b>` | held still for 30 steps with its centre of mass outside its support polygon |
 | `spontaneous_motion:scene` | kinetic energy rising for 10 steps with no action for 90 steps |
 
 Contacts use a 3 mm gap tolerance between capsule surfaces because the
 model resolves contact at particle level (6 mm contact radius) and settles
 stacked bodies a millimetre or three apart. The resting gap is reported so
-it can be judged rather than hidden.
+it can be judged rather than hidden. `support` uses the model's full 6 mm
+contact zone and counts only contacts from below (the neighbour's contact
+normal points up) plus floor contacts; `support.balanced` says whether the
+centre of mass projects inside that support's convex hull (6 mm
+tolerance), `support.dist_mm` how far outside it is. `resting` is the
+simulator's own settle verdict, so `creep` means a held body moved.
 
 ## Probes: scripted experiments
 
@@ -93,10 +99,12 @@ The learned model does the contact physics. Three analytic rules clean up
 after it in the demo (never during evaluation), and every intervention is
 recorded per step in `guard`:
 
-- **free flight**: a body with no edge to another body and no particle within the contact radius of the floor gets a zero residual; only gravity and the applied force act on it. Without this, a pencil released in mid-air hovered (the network never saw a motionless unsupported body in training).
-- **pivot**: a body whose only support is one region of the floor while its axis is tilted more than 3 degrees is integrated as a pendulum about that contact (gravity's torque over the inertia about the pivot, model residual dropped, centre of mass moving with omega x r), with an impact damping of 0.2 when the far end reaches the floor. Without this a pencil that landed on its end was held 9-14 degrees up with the other end in the air, and pencils balanced on their tips (the round-1 tester's complaint).
+- **free flight**: a body with no edge to another body and no particle within the contact radius of the floor gets a zero residual; only gravity and the applied force act on it. Without this, a pencil released in mid-air hovered (the network never saw a motionless unsupported body in training). The same applies to a body that touches things but has nothing below it (only pencils on its back): it falls, and they come down with it.
+- **pivot**: a body whose centre of mass is not over its support (more than 7 mm outside the support polygon, with hysteresis back to 4 mm) is integrated as a pendulum about the hinge, the nearest point of the support polygon's boundary (an edge between two contacts, or a lone contact): gravity's torque over the inertia about the hinge, model residual dropped, centre of mass moving with omega x r; velocities are cut to 0.2 when the swing lands on a new support. Without this a pencil that landed on its end was held 9-14 degrees up with the other end in the air, and pencils balanced on their tips (the round-1 tester's complaint).
 - **ground / capsule guards**: residual overlap with the floor or another capsule is removed and the approaching velocity cancelled.
-- **settle**: a supported body that has been slow for 12 steps is held exactly still (pose restored) until something acts on it. Zeroing velocity alone left a slow sideways creep driven by the guards. At the moment a body settles, a gap of up to 6 mm to the floor or to the nearest capsule is closed once, because the model's contact response equilibrates 2-5 mm above whatever it landed on.
+- **settle**: a supported body that has been slow (under 3 cm/s, 0.6 rad/s) for 15 steps is held exactly still (pose restored) until something acts on it; slow motion on a support is damped by half each step first, because the model's contact response rings for a second after a landing. Zeroing velocity alone left a slow sideways creep driven by the guards. At the moment a body settles, a gap of up to 6 mm to the floor or to the nearest capsule is closed once, because the model's contact response equilibrates 2-5 mm above whatever it landed on.
+- **caps**: 3 m/s and 60 rad/s; nothing in a pencil pile moves faster, and a runaway must not leave the table.
+- **at load**: overlaps left by the single-view reconstruction are resolved by lifting the upper body of each overlapping pair straight up (`load_correction.lift_mm` in the scene event), never sideways, and the first 24 physics steps run before anything is drawn, so the pile appears already settled. Grabs attach on the pencil's axis, whatever the cursor hit, so the spring cannot torque the pencil about its own axis.
 
 Each rule sets a flag in the per-step `guard` record (`freeFlight`, `pivot`, `settled`) so a report can always say whether the model or a rule produced a motion.
 

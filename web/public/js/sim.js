@@ -5,8 +5,11 @@
  */
 import {
   actionFeature, buildEdges, capsuleClosest, capsuleWorld, edgeFeatures,
-  externalAccels, quatToMatrix, stepBodies,
+  externalAccels, quatFromRotvec, quatMul, quatToMatrix, stepBodies,
+  supportAnalysis, supportPoints,
 } from "./physics.js";
+
+const SETTLE_STEPS = 15;   // consecutive slow steps before a body is held still
 
 export class PhysSim {
   /**
@@ -23,6 +26,7 @@ export class PhysSim {
 
   reset() {
     const bs = this.packet.bodies;
+    this.gen = (this.gen ?? 0) + 1;   // a step in flight across a reset aborts
     this.B = bs.length;
     this.mass = bs.map((b) => b.mass);
     this.inertia = bs.map((b) => b.inertia);
@@ -48,17 +52,32 @@ export class PhysSim {
     this.stepCount = 0;
     this.last = null;                 // per-step diagnostics (see #newLast)
     // Reconstructed poses overlap by up to ~1 cm (single-view depth error).
-    // Resolve that before the first frame instead of letting the guards
-    // jolt the pile apart in front of the viewer.
+    // Resolve that before the first frame by lifting the upper body of each
+    // overlapping pair straight up: the photo's x/y arrangement is what the
+    // reconstruction gets right and heights are what it gets wrong. Pushing
+    // along contact normals instead moved pencils up to 6 cm sideways
+    // (blind test round 3: "the loader rewrites the photo").
     if (this.groundGuard && bs.length) {
-      this.last = this.#newLast();
-      for (let it = 0; it < 30; it++) { this.#capsuleGuard(); this.#groundGuard(); }
-      this.state.linvel = bs.map(() => [0, 0, 0]);
-      this.loadCorrection = {                       // what the pre-settle moved
-        ground_mm: Array.from(this.last.guard.ground, (x) => x * 1e3),
-        capsule_mm: Array.from(this.last.guard.capsule, (x) => x * 1e3),
-      };
-      this.last = null;
+      const lift = new Float64Array(this.B);
+      for (let it = 0; it < 60; it++) {
+        let moved = false;
+        const segs = bs.map((b, i) => capsuleWorld(this.state.pos[i], this.state.quat[i], b.capsule));
+        for (let i = 0; i < this.B; i++) for (let j = i + 1; j < this.B; j++) {
+          const { pen } = capsuleClosest(segs[i], segs[j]);
+          if (pen <= 3e-4) continue;
+          const up = this.state.pos[i][2] >= this.state.pos[j][2] ? i : j;
+          this.state.pos[up][2] += pen; lift[up] += pen; moved = true;
+        }
+        for (let b = 0; b < this.B; b++) {
+          const R = quatToMatrix(this.state.quat[b]);
+          let minz = Infinity;
+          for (const o of this.offsets[b])
+            minz = Math.min(minz, R[6] * o[0] + R[7] * o[1] + R[8] * o[2] + this.state.pos[b][2]);
+          if (minz < 0) { this.state.pos[b][2] -= minz; lift[b] -= minz; moved = true; }
+        }
+        if (!moved) break;
+      }
+      this.loadCorrection = { lift_mm: Array.from(lift, (x) => x * 1e3) };
     }
   }
 
@@ -85,38 +104,53 @@ export class PhysSim {
   }
 
   /**
-   * Pivot rule. A body whose only support is one region of the floor while
-   * its axis is tilted cannot be at rest: gravity's torque about the contact
-   * must rotate it flat. The network holds such a body still (a pencil that
-   * lands on its end came to rest 9 degrees up with the far end in the air;
-   * the round-1 tester saw pencils balanced on their tips). For that case
-   * the body is integrated analytically as a pendulum about the contact
-   * point: alpha = (r x m g) / I_pivot, the model residual is dropped, and
-   * the centre of mass moves with omega x r so the contact stays put. Hands
-   * back to the model once the axis is within 3 degrees of flat or anything
-   * else touches the body.
+   * Pivot rule. A body whose centre of mass is not over its support cannot
+   * be at rest: gravity's torque about the support must rotate it. The
+   * network holds such a body still (a pencil that landed on its end came
+   * to rest 9 degrees up with the far end in the air; the round-1 tester
+   * saw pencils balanced on their tips). The body is integrated
+   * analytically as a pendulum about the hinge, the point of the support
+   * polygon's boundary nearest the centre of mass (an edge between two
+   * contacts, or a lone contact): alpha = (r x m g) / I_hinge, the model
+   * residual is dropped, and the centre of mass moves with omega x r so
+   * the hinge stays put. A body whose centre of mass is over its support
+   * is left to the model, and so is anything the cursor holds.
    */
   #pivotRule(parts, ext, actBody) {
     const bs = this.packet.bodies, rt = this.rt, g = rt.gravity;
     const segs = bs.map((b, i) => capsuleWorld(this.state.pos[i], this.state.quat[i], b.capsule));
     const out = [];
     let k = 0;
+    // support verdicts for this step, computed once on the state the
+    // diagnostics recorded last step, and shared with settle so the two
+    // can never disagree about whether a body may be held still
+    this.balancedNow ??= new Uint8Array(this.B);
+    this.balancedNow.fill(0);
+    this.pivoting ??= new Uint8Array(this.B);
     for (let b = 0; b < this.B; b++) {
       const n = this.counts[b], start = k; k += n;
-      if (b === actBody || this.last.guard.freeFlight[b]) continue;
-      if (Math.abs(segs[b].a[2]) < 0.0523) continue;             // within 3 deg of flat
-      let lowest = Infinity, li = -1;
-      for (let i = start; i < start + n; i++)
-        if (parts[3 * i + 2] < lowest) { lowest = parts[3 * i + 2]; li = i; }
-      // "on the floor" is the model's own contact zone: it holds a landed
-      // end 3-5 mm up (particle contact radius 6 mm), so a 1.5 mm test
-      // waited a second for the end to sink before the rule engaged
-      if (lowest > 4e-3) continue;                                // not on the floor
-      let touching = false;
-      for (let j = 0; j < this.B && !touching; j++)
-        if (j !== b && capsuleClosest(segs[b], segs[j]).pen > -3e-3) touching = true;
-      if (touching) continue;                                     // leaning on something
-      const P = [parts[3 * li], parts[3 * li + 1], parts[3 * li + 2]];
+      if (this.last.guard.freeFlight[b]) continue;
+      const rc = rt.contact_radius;
+      const sp = supportPoints(parts, start, n, segs, b, rc, rc);
+      const an = supportAnalysis(this.state.pos[b], sp.points);
+      this.balancedNow[b] = an.n && an.balanced ? 1 : 0;
+      if (b === actBody) continue;
+      if (!an.n) {
+        // touching things, but nothing from below (only pencils on its
+        // back, or a neighbour beside it): it falls like a free body, and
+        // whatever rests on it comes down with it
+        for (let q = 0; q < 6; q++) this.last.residual[6 * b + q] = 0;
+        this.last.guard.freeFlight[b] = 1;
+        this.pivoting[b] = 0;
+        continue;
+      }
+      // hysteresis: start tipping only when clearly off the support, keep
+      // tipping until clearly over it. Flip-flopping at the boundary (pivot
+      // one step, model the next) crept bodies at ~1 mm/s.
+      const off = an.dist > (this.pivoting[b] ? 4e-3 : 7e-3);
+      this.pivoting[b] = off ? 1 : 0;
+      if (!off) continue;
+      const P = an.hinge;
       const c = this.state.pos[b], m = this.mass[b];
       const r = [c[0] - P[0], c[1] - P[1], c[2] - P[2]];
       // torque of gravity about P: r x (0, 0, -m g)
@@ -140,7 +174,7 @@ export class PhysSim {
       const wu = w[0] * u[0] + w[1] * u[1] + w[2] * u[2];
       for (let q = 0; q < 3; q++) w[q] = wu * u[q];
       this.last.guard.pivot[b] = 1;
-      out.push({ b, P });
+      out.push({ b, P, start, n });
     }
     return out;
   }
@@ -276,43 +310,122 @@ export class PhysSim {
     const segs = bs.map((b, i) => capsuleWorld(this.state.pos[i], this.state.quat[i], b.capsule));
     const supported = new Uint8Array(this.B);
     const gap = new Float64Array(this.B).fill(Infinity);   // to nearest capsule
+    // "supported" is the same 5 mm contact zone the pivot rule uses
+    // (supportPoints): a tighter 1.5 mm test left bodies the model holds
+    // 2-4 mm above their neighbours un-settled, creeping at ~1 mm/s and
+    // ringing for a second after every landing
+    const parts = this.particlesWorld();
+    const spAll = [];
+    let k = 0;
     for (let i = 0; i < this.B; i++) {
-      if (this.#lying(i)) supported[i] = 1;
+      const n = this.counts[i], start = k; k += n;
+      // supported AND balanced, as judged at the start of this step by the
+      // pivot rule (same state the diagnostics recorded): a body whose
+      // centre of mass is off its support must keep moving, whatever its
+      // speed. Judging it here, after the guards moved things, let a body
+      // be held still 16 mm off its support while the record said so.
+      spAll.push(supportPoints(parts, start, n, segs, i, this.rt.contact_radius, this.rt.contact_radius));
+      supported[i] = this.balancedNow?.[i] ?? 0;
       for (let j = i + 1; j < this.B; j++) {
         const g = -capsuleClosest(segs[i], segs[j]).pen;
-        if (g < 1.5e-3) { supported[i] = 1; supported[j] = 1; }
         gap[i] = Math.min(gap[i], g); gap[j] = Math.min(gap[j], g);
       }
     }
     for (let b = 0; b < this.B; b++) {
       const v = this.state.linvel[b], w = this.state.angvel[b];
       const standing = Math.abs(segs[b].a[2]) > 0.7071;
-      const slow = b !== actBody && supported[b] && !standing &&
-        Math.hypot(...v) < 0.012 && Math.hypot(...w) < 0.35;
+      // Slow motion of a supported body dies quickly in reality (friction
+      // decelerates a sliding pencil at ~5 m/s^2, so 8 cm/s is gone in
+      // 16 ms); the model instead rings for ~10 steps after every landing
+      // (diagnostics: "jitter"). Damp the tail.
+      if (b !== actBody && supported[b] && !this.pivoting?.[b] &&
+          Math.hypot(...v) < 0.05 && Math.hypot(...w) < 2)
+        for (let q = 0; q < 3; q++) { v[q] *= 0.5; w[q] *= 0.5; }
+      // the model's contact response rings at 1-3 cm/s amplitude for a
+      // second after a landing; a body that slow on a support is at rest
+      const slow = b !== actBody && supported[b] && !standing && !this.pivoting?.[b] &&
+        Math.hypot(...v) < 0.03 && Math.hypot(...w) < 0.6;
       this.restCount[b] = slow ? this.restCount[b] + 1 : 0;
-      if (this.restCount[b] === 12) {
+      if (this.restCount[b] === SETTLE_STEPS) {
         // The model's contact response equilibrates 2-5 mm above whatever
         // it landed on (particle contact radius 6 mm), so a pencil that
         // just came to rest hovers slightly. Close that gap once, when it
-        // settles: drop it by the smaller of the floor gap and the capsule
-        // gap. The capsule guard next step resolves any resulting overlap.
+        // settles. A pencil with one end on the floor and its body above a
+        // neighbour closes it by rotating about the floor end; anything
+        // else drops by the smaller of the floor gap and the capsule gap.
+        // The capsule guard resolves any resulting overlap.
         const R = quatToMatrix(this.state.quat[b]);
         let lowest = Infinity;
         for (const o of this.offsets[b])
           lowest = Math.min(lowest, R[6] * o[0] + R[7] * o[1] + R[8] * o[2] + this.state.pos[b][2]);
-        const drop = Math.max(0, Math.min(lowest, gap[b]));
-        if (drop > 3e-4 && drop < 6e-3) {
-          this.state.pos[b][2] -= drop;
-          prePos[b][2] -= drop;
-          if (this.last) this.last.guard.ground[b] -= drop;   // recorded as a negative lift
+        const sp = spAll[b];
+        if (lowest < 1e-3 && sp.floor > 0 && sp.capsule.length && gap[b] > 3e-4 && gap[b] < 6e-3) {
+          // hinge at the floor cluster; the widest capsule gap sets the angle
+          const P = [0, 0, 0];
+          for (let q = 0; q < sp.floor; q++) for (let c = 0; c < 3; c++) P[c] += sp.points[q][c] / sp.floor;
+          let Q = null, g = 0;
+          for (let q = 0; q < sp.capsule.length; q++) {
+            const cc = capsuleClosest(segs[b], segs[sp.capsule[q]]);
+            if (-cc.pen > g) { g = -cc.pen; Q = cc.ca; }
+          }
+          const r = [Q[0] - P[0], Q[1] - P[1], Q[2] - P[2]];
+          const d = Math.hypot(...r);
+          if (d > 0.02 && g > 3e-4) {
+            const theta = g / d;
+            // axis: horizontal, perpendicular to r, oriented so Q moves down
+            let u = [r[1], -r[0], 0];
+            const un = Math.hypot(u[0], u[1]);
+            if (un > 1e-9) {
+              u = u.map((x) => x / un);
+              const dq = quatFromRotvec([u[0] * theta, u[1] * theta, 0]);
+              const Rq = quatToMatrix(dq);
+              const rot = (v) => [Rq[0] * v[0] + Rq[1] * v[1] + Rq[2] * v[2],
+                Rq[3] * v[0] + Rq[4] * v[1] + Rq[5] * v[2], Rq[6] * v[0] + Rq[7] * v[1] + Rq[8] * v[2]];
+              if (rot(r)[2] > r[2]) { u = u.map((x) => -x); }
+              const dq2 = quatFromRotvec([u[0] * theta, u[1] * theta, 0]);
+              const R2 = quatToMatrix(dq2);
+              const rot2 = (v) => [R2[0] * v[0] + R2[1] * v[1] + R2[2] * v[2],
+                R2[3] * v[0] + R2[4] * v[1] + R2[5] * v[2], R2[6] * v[0] + R2[7] * v[1] + R2[8] * v[2]];
+              const c = this.state.pos[b];
+              const nc = rot2([c[0] - P[0], c[1] - P[1], c[2] - P[2]]);
+              this.state.pos[b] = [P[0] + nc[0], P[1] + nc[1], P[2] + nc[2]];
+              this.state.quat[b] = quatMul(dq2, this.state.quat[b]);
+              const qn = Math.hypot(...this.state.quat[b]);
+              this.state.quat[b] = this.state.quat[b].map((x) => x / qn);
+              prePos[b] = [...this.state.pos[b]]; preQuat[b] = [...this.state.quat[b]];
+              if (this.last) this.last.guard.ground[b] -= g;   // recorded as a negative lift
+            }
+          }
+        } else {
+          const drop = Math.max(0, Math.min(lowest, gap[b]));
+          if (drop > 3e-4 && drop < 6e-3) {
+            this.state.pos[b][2] -= drop;
+            prePos[b][2] -= drop;
+            if (this.last) this.last.guard.ground[b] -= drop;   // recorded as a negative lift
+          }
         }
       }
-      if (this.restCount[b] >= 12) {
+      if (this.restCount[b] >= SETTLE_STEPS) {
         v[0] = v[1] = v[2] = 0; w[0] = w[1] = w[2] = 0;
         this.state.pos[b] = [...prePos[b]];
         this.state.quat[b] = [...preQuat[b]];
-        if (this.last) this.last.guard.settled[b] = 1;
+        if (this.last) {
+          this.last.guard.settled[b] = 1;
+          // the guards' pushes on this body were undone by the restore, so
+          // report no correction (a tester read the raw pushes as a
+          // "fight" at rest)
+          this.last.guard.ground[b] = 0; this.last.guard.capsule[b] = 0;
+        }
       }
+    }
+    // hygiene caps: nothing in a pencil pile moves faster than this, and a
+    // runaway (a spring at a bad lever arm, a bad contact step) must not
+    // fling bodies off the table
+    for (let b = 0; b < this.B; b++) {
+      const v = this.state.linvel[b], w = this.state.angvel[b];
+      const sv = Math.hypot(...v), sw = Math.hypot(...w);
+      if (sv > 3) for (let q = 0; q < 3; q++) v[q] *= 3 / sv;
+      if (sw > 60) for (let q = 0; q < 3; q++) w[q] *= 60 / sw;
     }
   }
 
@@ -356,6 +469,7 @@ export class PhysSim {
   async step(actBody = -1, actPoint = null, actForce = null) {
     const rt = this.rt, n = rt.normalize, H = rt.history;
     const T0 = performance.now();
+    const gen = this.gen;
     this.last = this.#newLast();
     if (actBody >= 0) this.last.action = { body: actBody, point: [...actPoint], force: [...actForce] };
     const parts = this.particlesWorld();
@@ -467,6 +581,9 @@ export class PhysSim {
     const T3 = performance.now();
     this.timing = { features_ms: T1 - T0, graph_ms: T2 - T1, net_ms: T3 - T2,
       E: Ereal, N: this.N, backend: this.backend.kind };
+    // the scene was reset (or replaced) while the network ran: this step's
+    // inputs describe a state that no longer exists, so drop it
+    if (gen !== this.gen || !this.last) return this.state;
 
     const residual = this.last.residual;
     for (let b = 0; b < this.B; b++)
@@ -487,7 +604,7 @@ export class PhysSim {
     const preQuat = this.state.quat.map((q) => [...q]);
     stepBodies(this.state, residual, ext, rt.dt, rt.gravity);
     const bs = this.packet.bodies;
-    if (pivots) for (const { b, P } of pivots) {
+    if (pivots) for (const { b, P, start, n } of pivots) {
       // rotation about the fixed contact point: v_com = omega x (com - P),
       // replacing the free integration of the centre of mass
       const w = this.state.angvel[b], c = prePos[b];
@@ -495,20 +612,31 @@ export class PhysSim {
       const v = [w[1] * r[2] - w[2] * r[1], w[2] * r[0] - w[0] * r[2], w[0] * r[1] - w[1] * r[0]];
       this.state.linvel[b] = v;
       this.state.pos[b] = [c[0] + v[0] * rt.dt, c[1] + v[1] * rt.dt, c[2] + v[2] * rt.dt];
-      // the far end reaching the floor is an impact: a pencil's end on a
-      // table keeps little of its speed (restitution ~0.2), and without this
-      // the swing carried through and the pencil bounced 12 degrees back up
-      const R = quatToMatrix(this.state.quat[b]);
-      const az = R[6] * bs[b].capsule.axis[0] + R[7] * bs[b].capsule.axis[1] + R[8] * bs[b].capsule.axis[2];
-      if (Math.abs(az) < 0.0523) {
+      // the swing ending on a new support is an impact: a pencil's end on
+      // a table keeps little of its speed (restitution ~0.2), and without
+      // this the swing carried through and the pencil bounced 12 degrees
+      // back up. "New support" = the centre of mass is now over the support.
+      const partsNow = this.particlesWorld();
+      const segsNow = bs.map((bb, i) => capsuleWorld(this.state.pos[i], this.state.quat[i], bb.capsule));
+      const spNow = supportPoints(partsNow, start, n, segsNow, b, rt.contact_radius, rt.contact_radius);
+      const anNow = supportAnalysis(this.state.pos[b], spNow.points);
+      if (anNow.n && anNow.dist < 4e-3) {
         for (let q = 0; q < 3; q++) { this.state.linvel[b][q] *= 0.2; this.state.angvel[b][q] *= 0.2; }
+        this.pivoting[b] = 0;
       }
     }
     if (this.groundGuard) {
       // capsules first: their push can move a body into the floor, and the
       // floor is the hard constraint (diagnostics caught 1 mm "sinking"
-      // episodes from the reverse order)
-      this.#capsuleGuard(); this.#groundGuard(); this.#settle(prePos, preQuat, actBody);
+      // episodes from the reverse order). Two passes: a pencil dragged out
+      // from under two others is a chain, and one pass left 4-7 mm.
+      this.#capsuleGuard(); this.#groundGuard();
+      this.#capsuleGuard(); this.#groundGuard();
+      this.#settle(prePos, preQuat, actBody);
+      // settle restores poses, which undoes the guards' pushes on held
+      // bodies: two settled pencils that were nudged into each other stayed
+      // 3.8 mm overlapped for two seconds. Separate them after the restore.
+      this.#capsuleGuard(); this.#groundGuard();
     }
     this.linHist.shift(); this.linHist.push(this.state.linvel.map((v) => [...v]));
     this.angHist.shift(); this.angHist.push(this.state.angvel.map((v) => [...v]));
