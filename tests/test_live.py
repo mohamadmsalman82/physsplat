@@ -55,3 +55,29 @@ def test_livesim_padding_transparent():
         outs.append(p)
     live.NODE_BUCKET = 256
     np.testing.assert_allclose(outs[0], outs[1], atol=1e-6)
+
+
+def test_free_flight_rule_is_exact_gravity():
+    """A body touching nothing must fall at exactly g under the free-flight
+    rule, whatever the (here untrained, random) network says; the same
+    network without the rule must not, or the test proves nothing."""
+    torch.manual_seed(0)
+    rng = np.random.default_rng(2)
+    model = Simulator(latent=32, layers=2).eval()
+    norm = Normalizer("data/stats.json")
+    scene, init = _scene(rng, B=2)
+    # body 0 high in the air, far from body 1 on the floor
+    init["pos"][:, 0] = [0.3, 0.3, 0.2]
+    init["pos"][:, 1] = [0.0, 0.0, 0.02]
+    steps = 6
+    z_free = []
+    for rule in (True, False):
+        sim = LiveSim(model, norm, scene, init, "cpu", free_flight=rule)
+        with torch.no_grad():
+            for _ in range(steps):
+                p, _ = sim.step()
+        z_free.append(float(p[0, 2]))
+    # semi-implicit Euler from rest: z = z0 - g dt^2 * (1 + 2 + ... + steps)
+    expected = 0.2 - C.GRAVITY * C.DT ** 2 * steps * (steps + 1) / 2
+    assert abs(z_free[0] - expected) < 1e-6
+    assert abs(z_free[1] - expected) > 1e-4

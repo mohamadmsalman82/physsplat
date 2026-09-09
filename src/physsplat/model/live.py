@@ -19,15 +19,23 @@ NODE_BUCKET = 256   # pad node count so per-scene shapes don't multiply
 
 
 class LiveSim:
+    # Process-wide default for the free-flight rule (scripts/evaluate.py
+    # --free-flight flips it so the scorecard can be run both ways).
+    DEFAULT_FREE_FLIGHT = False
+
     def __init__(self, model, normalizer, scene: dict, init: dict, device="cpu",
-                 ground_guard: bool = False):
+                 ground_guard: bool = False, free_flight: bool | None = None):
         """scene: offsets_list, mass, inertia (numpy).
         init: pos/quat/linvel/angvel, each (HISTORY, B, ...) numpy warmup.
         ground_guard: analytic non-penetration cleanup for demos (lift a body
         whose particles dip below z=0, cancel downward velocity). Off for
-        evaluation so the scorecard measures the model, not the guard."""
+        evaluation so the scorecard measures the model, not the guard.
+        free_flight: zero the learned residual for bodies touching nothing
+        (see step); an analytic rule, not a guard, so it may be evaluated."""
         self.model, self.norm, self.device = model, normalizer, device
         self.ground_guard = ground_guard
+        self.free_flight = (LiveSim.DEFAULT_FREE_FLIGHT if free_flight is None
+                            else free_flight)
         B = self.B = len(scene["mass"])
         self.offsets = [torch.tensor(o, dtype=torch.float32, device=device)
                         for o in scene["offsets_list"]]
@@ -122,6 +130,22 @@ class LiveSim:
             self.norm.node_features(batch), ef, senders, receivers,
             self.body_ids, self.B + 1, self.body_scalars)
         residual = self.norm.denorm_target(pred[:self.B])
+
+        if self.free_flight:
+            # Free-flight rule (mirrors web/public/js/sim.js): a body with no
+            # edge to another body and no particle within the contact radius
+            # of the floor feels only gravity and the applied force, so its
+            # learned residual is zeroed. The network never saw a motionless
+            # unsupported body in training and holds one in mid-air.
+            touched = np.zeros(self.B, bool)
+            bs, br = self.body_ids_np[s_np], self.body_ids_np[r_np]
+            cross = bs != br
+            touched[bs[cross]] = True
+            touched[br[cross]] = True
+            touched[np.unique(self.body_ids_np[parts_np[:, 2] < C.CONTACT_RADIUS])] = True
+            if not touched.all():
+                keep = torch.tensor(touched, device=self.device).float()[:, None]
+                residual = residual * keep
 
         ext_lin, ext_ang = external_accels(
             self.pos, self.quat, self.mass, self.inertia, act_body, pt, fc)
