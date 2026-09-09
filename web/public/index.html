@@ -18,8 +18,11 @@
     border-radius: 7px; padding: 6px 10px; margin: 6px 6px 0 0; cursor: pointer;
     font-size: 13px; }
   #err { color: #ff8080; white-space: pre-wrap; }
-  #diag { position: fixed; right: 14px; top: 14px; bottom: 14px; z-index: 2; width: 560px;
-          max-width: calc(100vw - 360px); overflow: auto; background: #181b21f2;
+  /* the panel used to take half the viewport and hide the scene it
+     describes; keep it to a third and let it end where its content does */
+  #diag { position: fixed; right: 14px; top: 14px; z-index: 2; width: 520px;
+          max-width: min(38vw, calc(100vw - 380px)); max-height: calc(100vh - 28px);
+          overflow: auto; background: #181b21f2;
           border: 1px solid #2a2f38; border-radius: 10px; padding: 10px 12px;
           font: 11.5px/1.35 ui-monospace, Menlo, monospace; color: #c9d1d9; }
   #diag h2 { margin: 0 0 6px; font-size: 13px; color: #8ec5ff; }

@@ -45,7 +45,7 @@ for (const file of names) {
   const sim = new PhysSim({ kind: "ort", ort, session }, runtime, packet,
     { energyRule: process.env.REST_ENERGY === "1", smooth: process.env.REST_SMOOTH === "1" });
   // the page hides the first steps while the reconstruction settles
-  for (let k = 0; k < 45; k++) await sim.step();
+  for (let k = 0; k < 180; k++) await sim.step();
   const p0 = sim.state.pos.map((p) => [...p]);
   const e0 = packet.bodies.map((_, b) => elevation(sim, b));
   const worst = { rise: 0, tilt: 0, drift: 0, sink: 0, body: -1 };

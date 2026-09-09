@@ -162,7 +162,11 @@ async function loadScene(name) {
   preroll = PREROLL_STEPS;
   loading = false;
 }
-const PREROLL_STEPS = 45;   // 0.75 s: a lifted-at-load pencil drops and settles within this
+// 3 s. Sleep now waits until a body's pose is resolved against the floor
+// or a neighbour, so the pile has to be given time to get there before it
+// is shown; at 0.75 s a blind tester caught scenes frozen mid-settle with
+// pencils millimetres in the air.
+const PREROLL_STEPS = 180;
 let preroll = 0;
 
 /**

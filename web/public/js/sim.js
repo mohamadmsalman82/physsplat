@@ -19,6 +19,13 @@ const PINCH_DAMPING = 12;
 // A body the guards keep pushing out while it goes nowhere is in a limit
 // cycle, not in motion: 0.5 s of that and settle may claim it.
 const GUARD_HELD_V = 0.06, GUARD_HELD_W = 1.5, GUARD_HELD_STEPS = 30;
+// A body may sleep only once its pose is resolved: within a third of a
+// millimetre of the floor or a neighbour.
+const SLEEP_GAP = 3e-4;
+// Floor stiction: 20 mm/s horizontal is 0.3 mm a step, well under a
+// pencil's static friction; the vertical and angular gates keep falling
+// and toppling bodies out of it.
+const STICTION_V = 0.02, STICTION_VZ = 0.01, STICTION_W = 0.6, STICTION_STEPS = 10;
 
 export class PhysSim {
   /**
@@ -440,10 +447,13 @@ export class PhysSim {
     // 2-4 mm above their neighbours un-settled, creeping at ~1 mm/s and
     // ringing for a second after every landing
     const parts = this.particlesWorld();
-    const spAll = [];
+    const spAll = [], lowestOf = new Float64Array(this.B);
     let k = 0;
     for (let i = 0; i < this.B; i++) {
       const n = this.counts[i], start = k; k += n;
+      let lo = Infinity;
+      for (let q = start; q < start + n; q++) lo = Math.min(lo, parts[3 * q + 2]);
+      lowestOf[i] = lo;
       // supported AND balanced, as judged at the start of this step by the
       // pivot rule (same state the diagnostics recorded): a body whose
       // centre of mass is off its support must keep moving, whatever its
@@ -474,6 +484,21 @@ export class PhysSim {
       this.guardHeld[b] = (pushed && b !== actBody &&
         Math.hypot(...v) < GUARD_HELD_V && Math.hypot(...w) < GUARD_HELD_W)
         ? this.guardHeld[b] + 1 : 0;
+
+      // Floor stiction. A pencil lying on a table does not slide at
+      // 1.9 mm/s: friction holds it, and the learned model does not. One
+      // walked 50 mm in 27 s under the guards' corrections, never slow
+      // enough to sleep because it was, precisely, moving. Gated on being
+      // on the floor, barely moving in every direction, and untouched, so
+      // a falling body (large vertical speed) and a pulled one are exempt.
+      this.stickCount ??= new Int32Array(this.B);
+      const stickable = b !== actBody && lowestOf[b] < 1e-3 &&
+        Math.abs(v[2]) < STICTION_VZ && Math.hypot(v[0], v[1]) < STICTION_V &&
+        Math.hypot(...w) < STICTION_W;
+      // ten consecutive slow steps, so a body that has just lost its
+      // support and is starting to fall is never caught by stiction
+      this.stickCount[b] = stickable ? this.stickCount[b] + 1 : 0;
+      if (this.stickCount[b] >= STICTION_STEPS) { v[0] = 0; v[1] = 0; }
       // Slow motion of a supported body dies quickly in reality (friction
       // decelerates a sliding pencil at ~5 m/s^2, so 8 cm/s is gone in
       // 16 ms); the model instead rings for ~10 steps after every landing
@@ -483,7 +508,16 @@ export class PhysSim {
         for (let q = 0; q < 3; q++) { v[q] *= 0.5; w[q] *= 0.5; }
       // the model's contact response rings at 1-3 cm/s amplitude for a
       // second after a landing; a body that slow on a support is at rest
-      const slow = (b !== actBody && supported[b] && !standing && !this.pivoting?.[b] &&
+      // Sleep only once the body is really where it belongs. Settling on
+      // "supported" alone froze scenes in their loaded pose: a blind
+      // tester measured a two-pencil cluster asleep 2.3 and 14.8 mm in the
+      // air, with other barrels 0.5-3.8 mm inside the tabletop, and proved
+      // the solver could fix it (one 5 s drag brought every body within
+      // 0.9 mm of the table). The pose has to be resolved first: touching
+      // the floor or a neighbour within a third of a millimetre.
+      const touching = Math.min(gap[b], lowestOf[b]) < SLEEP_GAP;
+      const slow = (b !== actBody && supported[b] && touching && !standing &&
+        !this.pivoting?.[b] &&
         Math.hypot(...v) < 0.03 && Math.hypot(...w) < 0.6) ||
         this.guardHeld[b] >= GUARD_HELD_STEPS;
       this.restCount[b] = slow ? this.restCount[b] + 1 : 0;

@@ -31,7 +31,7 @@ const hyp = (v) => Math.hypot(v[0], v[1], v[2]);
 
 async function fresh() {
   const sim = new PhysSim({ kind: "ort", ort, session }, runtime, packet);
-  for (let k = 0; k < 45; k++) await sim.step();     // the page's hidden pre-roll
+  for (let k = 0; k < 180; k++) await sim.step();     // the page's hidden pre-roll
   return sim;
 }
 const lowest = (sim, b) => {
