@@ -202,6 +202,45 @@ what it carried; no unbalanced or tilted rest poses; the remaining
 anomalies are single-step penetrations of 2-3 mm and sub-millimetre
 jitter for a few steps after landings.
 
-## Round 4
+## Round 4 (2026-09-09)
+
+The tester run for this round is still out. What the diagnostics and the
+scorecard established in the meantime:
+
+**The first no-free-energy rule was wrong, and the scorecard said so.**
+It policed the whole scene's mechanical energy every step. An impact is a
+legitimate energy spike for the bodies involved, so the rule cut contact
+impulses: composite 42.4 against 62.3 for free-flight alone, stability
+0.833 to 0.375, support-removal Jaccard 0.60 to 0.27, post-action error
+0.29 to 0.57. It is now restricted to bodies that are sitting still
+(under 5 cm/s and 1 rad/s, not held, not beside something moving) and
+polices only their own energy, which is exactly the failure it was built
+for: a resting pencil rearing up on its own. Rerunning the scorecard.
+
+This is the value of scoring an analytic rule instead of assuming it. The
+free-flight rule earned its place the same way (62.3 against 61.0, with
+translation error 0.0205 m against 0.0220 and Jaccard 0.60 against 0.50,
+paid for with ground penetration 1.04 mm against 0.38: bodies now reach
+the floor at the true speed and the model's landing response is softer
+than PyBullet's).
+
+**Probe battery on IMG_8513**, a scene not covered in round 3: rest
+still; lift tracks the cursor within 1.9 mm and the released pencil falls
+at 1.00 g, impact 0.49 m/s against 0.504 analytic, at rest 0.45 s later;
+pulling the load-bearing pencil out 78 mm drops the one above it 8.5 mm
+onto the floor; the flick travels 23 mm and stops in 0.85 s.
+
+**Flicks.** The trained 3-step impulse cannot move a pencil on a pile:
+0.3 m/s of impulse gives 3 mm of travel, 0.6 m/s also 3 mm, and 1.0 m/s
+spins the pencil to the 60 rad/s cap instead of sliding it. A mouse flick
+is now a short push along the gesture through the spring path: 0.3 m/s
+travels 13 mm, 0.5 m/s travels 29 mm, stopping within half a second.
+
+**A detector was wrong too.** `tilt_hold` fired nine times per battery on
+a tapered pencil lying flat, because it tested for missing capsule
+contacts within 3 mm rather than for what it meant. It now asks whether
+the body is tilted and held up over less than 30 mm.
+
+## Round 5
 
 Pending.

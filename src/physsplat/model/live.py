@@ -16,6 +16,8 @@ from .integrator import external_accels, quat_to_matrix, step
 
 EDGE_BUCKET = 4096
 NODE_BUCKET = 256   # pad node count so per-scene shapes don't multiply
+# "sitting still" for the energy rule (see LiveSim._limit_energy)
+QUIESCENT_V, QUIESCENT_W = 0.05, 1.0
 
 
 class LiveSim:
@@ -74,53 +76,68 @@ class LiveSim:
         self.quat_hist = [torch.tensor(q, dtype=torch.float32, device=device)
                           for q in init["quat"]][-C.HISTORY:]
 
-    def _energy(self, pos, quat, linvel, angvel) -> torch.Tensor:
-        """Mechanical energy of the real bodies (J): kinetic + gravitational."""
+    def _energy(self, pos, quat, linvel, angvel, mask=None) -> torch.Tensor:
+        """Mechanical energy (J) of the masked bodies: kinetic + gravitational."""
         m = self.mass[:self.B, None]
         I = self.inertia[:self.B]
         R = quat_to_matrix(quat)
         w_body = torch.einsum("bij,bi->bj", R, angvel)      # R^T w
-        ke = 0.5 * (m * linvel.pow(2)).sum() + 0.5 * (I * w_body.pow(2)).sum()
-        return ke + (m[:, 0] * C.GRAVITY * pos[:, 2]).sum()
+        e = (0.5 * m * linvel.pow(2)).sum(-1) + (0.5 * I * w_body.pow(2)).sum(-1) \
+            + m[:, 0] * C.GRAVITY * pos[:, 2]
+        return e.sum() if mask is None else e[mask].sum()
 
     def _limit_energy(self, residual, act_body, act_point, act_force):
-        """No free energy: contact with static things cannot add mechanical
-        energy to a scene, and an applied force can add only the work it
-        does. The network's residual on out-of-distribution (reconstructed)
-        piles violated that, standing pencils up on their own. Trial-step
-        the scene; if the energy rises by more than the action's work plus a
-        small allowance for pushing out of overlaps, scale the residual down
-        until it does not (bisection, 5 rounds)."""
+        """No free energy, for bodies that are sitting still: nothing lifts a
+        resting body, so with no applied force and no moving neighbour its
+        mechanical energy cannot rise. The network's residual on
+        out-of-distribution (reconstructed) piles violated that, standing
+        pencils up on their own. Trial-step; if a quiescent body's energy
+        rises, scale its residual down (bisection, 5 rounds).
+
+        Only quiescent bodies are policed, and only their own energy: an
+        impact is a legitimate energy spike, and a version of this rule that
+        policed the whole scene every step cut contact impulses and dropped
+        the scorecard from 62.3 to 42.4 (stability 0.83 -> 0.38)."""
         lin, ang = self.lin_hist[-1], self.ang_hist[-1]
-        E0 = self._energy(self.pos, self.quat, lin, ang)
-        work = torch.zeros((), device=self.device)
+        quiet = ((lin.norm(dim=-1) < QUIESCENT_V) & (ang.norm(dim=-1) < QUIESCENT_W))
         if act_body >= 0:
-            r = act_point - self.pos[act_body]
-            v_point = lin[act_body] + torch.linalg.cross(ang[act_body], r)
-            work = torch.dot(act_force, v_point) * C.DT
-        allow = work.clamp_min(0) + 5e-7
-
-        def gain(scale: float) -> torch.Tensor:
-            ext_l, ext_a = external_accels(
-                self.pos, self.quat, self.mass, self.inertia,
-                act_body, act_point, act_force)
-            p, q, lv, av = step(self.pos, self.quat, lin, ang,
-                                residual * scale, ext_l, ext_a)
-            return self._energy(p, q, lv, av) - E0
-
-        if float(gain(1.0)) <= float(allow):
+            quiet[act_body] = False
+        # a neighbour arriving at speed can legitimately lift a still body
+        moving = ~quiet
+        if bool(moving.any()) and bool(quiet.any()):
+            d = torch.cdist(self.pos[quiet], self.pos[moving])
+            near = (d < 3 * C.CONTACT_RADIUS + 0.15).any(-1)   # generous: body centres
+            idx = quiet.nonzero(as_tuple=True)[0]
+            quiet[idx[near]] = False
+        if not bool(quiet.any()):
             return residual
-        lo, hi = (0.0, 0.0) if float(gain(0.0)) > float(allow) else (0.0, 1.0)
+        E0 = self._energy(self.pos, self.quat, lin, ang, quiet)
+        allow = 5e-7 * int(quiet.sum())
+        ext_l, ext_a = external_accels(
+            self.pos, self.quat, self.mass, self.inertia,
+            act_body, act_point, act_force)
+
+        def gain(scale: float) -> float:
+            res = residual.clone()
+            res[quiet] = res[quiet] * scale
+            p, q, lv, av = step(self.pos, self.quat, lin, ang, res, ext_l, ext_a)
+            return float(self._energy(p, q, lv, av, quiet) - E0)
+
+        if gain(1.0) <= allow:
+            return residual
+        lo, hi = (0.0, 0.0) if gain(0.0) > allow else (0.0, 1.0)
         for _ in range(5):
             if hi <= lo:
                 break
             mid = 0.5 * (lo + hi)
-            if float(gain(mid)) > float(allow):
+            if gain(mid) > allow:
                 hi = mid
             else:
                 lo = mid
         self.energy_scale = lo
-        return residual * lo
+        scale = torch.where(quiet, torch.full_like(self.mass[:self.B], lo),
+                            torch.ones_like(self.mass[:self.B]))
+        return residual * scale[:, None]
 
     def particles_world(self) -> torch.Tensor:
         R = quat_to_matrix(self.quat)

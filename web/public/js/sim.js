@@ -10,6 +10,9 @@ import {
 } from "./physics.js";
 
 const SETTLE_STEPS = 15;   // consecutive slow steps before a body is held still
+// "sitting still" for the energy rule: slower than this and nothing that
+// happens to it can be an impact
+const QUIESCENT_V = 0.05, QUIESCENT_W = 1.0;
 
 export class PhysSim {
   /**
@@ -105,11 +108,11 @@ export class PhysSim {
     };
   }
 
-  /** Total mechanical energy of a state (J): kinetic + gravitational. */
-  #energy(st) {
+  /** Mechanical energy (J) of the listed bodies: kinetic + gravitational. */
+  #energy(st, which) {
     const g = this.rt.gravity;
     let E = 0;
-    for (let b = 0; b < this.B; b++) {
+    for (const b of which) {
       const v = st.linvel[b], w = st.angvel[b], m = this.mass[b], I = this.inertia[b];
       const R = quatToMatrix(st.quat[b]);
       const wb = [R[0] * w[0] + R[3] * w[1] + R[6] * w[2],
@@ -121,36 +124,56 @@ export class PhysSim {
   }
 
   /**
-   * No free energy. Contact forces from static things cannot add
-   * mechanical energy to a pile; only an applied force can, and only as
-   * much work as it does. The network's residual on a reconstructed pile
-   * did not respect that: a pencil at rest reared up to 89 degrees on its
-   * own, twice, and balanced on its end (diagnostics track, IMG_8596).
-   * Trial-integrate the step; if the energy rises by more than the
-   * action's work (plus a small allowance for pushing out of overlaps),
-   * scale the residual down until it does not.
+   * No free energy, for bodies that are sitting still. Nothing lifts a
+   * resting pencil: with no applied force and no moving neighbour, its
+   * mechanical energy cannot rise. The network's residual on a
+   * reconstructed pile did not respect that (a pencil at rest reared up to
+   * 89 degrees on its own, twice, and balanced on its end: diagnostics
+   * track, IMG_8596), so a quiescent body's residual is scaled down until
+   * its energy stops rising.
+   *
+   * Only quiescent bodies are policed, and only their own energy. An
+   * impact IS a legitimate energy spike for the bodies involved, and the
+   * first version of this rule policed the whole scene every step: it cut
+   * contact impulses, and the synthetic scorecard fell from 62.3 to 42.4
+   * (stability 0.83 -> 0.38, support-removal Jaccard 0.60 -> 0.27). This
+   * version leaves impacts, grabs and anything already moving alone.
    */
-  #energyRule(residual, ext, actBody, actPoint, actForce) {
+  #energyRule(residual, ext, actBody) {
     const rt = this.rt, st = this.state;
-    const E0 = this.#energy(st);
-    let W = 0;
-    if (actBody >= 0) {
-      const v = st.linvel[actBody], w = st.angvel[actBody], p = st.pos[actBody];
-      const r = [actPoint[0] - p[0], actPoint[1] - p[1], actPoint[2] - p[2]];
-      const vp = [v[0] + w[1] * r[2] - w[2] * r[1], v[1] + w[2] * r[0] - w[0] * r[2],
-        v[2] + w[0] * r[1] - w[1] * r[0]];
-      W = (actForce[0] * vp[0] + actForce[1] * vp[1] + actForce[2] * vp[2]) * rt.dt;
+    const quiet = [];
+    for (let b = 0; b < this.B; b++) {
+      if (b === actBody) continue;
+      if (Math.hypot(...st.linvel[b]) < QUIESCENT_V && Math.hypot(...st.angvel[b]) < QUIESCENT_W)
+        quiet.push(b);
     }
-    const allow = Math.max(W, 0) + 5e-7;          // J per step; 5e-7 ~ 0.5 mm/s of lift
+    if (!quiet.length) return;
+    // a neighbour arriving at speed can legitimately lift this body
+    for (let b = 0; b < this.B; b++) {
+      if (quiet.includes(b) || b === actBody) continue;
+      const fast = Math.hypot(...st.linvel[b]) > QUIESCENT_V;
+      if (!fast) continue;
+      const segs = this.packet.bodies.map((x, i) =>
+        capsuleWorld(st.pos[i], st.quat[i], x.capsule));
+      for (let q = quiet.length - 1; q >= 0; q--)
+        if (-capsuleClosest(segs[quiet[q]], segs[b]).pen < 3 * rt.contact_radius)
+          quiet.splice(q, 1);
+      break;
+    }
+    if (!quiet.length) return;
+    const E0 = this.#energy(st, quiet);
+    const allow = 5e-7 * quiet.length;      // J/step; 5e-7 ~ 0.5 mm/s of lift
     const trial = (scale) => {
       const copy = { pos: st.pos.map((x) => [...x]), quat: st.quat.map((x) => [...x]),
         linvel: st.linvel.map((x) => [...x]), angvel: st.angvel.map((x) => [...x]) };
-      const res = scale === 1 ? residual : residual.map((x) => x * scale);
+      const res = scale === 1 ? residual : Float64Array.from(residual);
+      if (scale !== 1) for (const b of quiet)
+        for (let k = 0; k < 6; k++) res[6 * b + k] *= scale;
       stepBodies(copy, res, ext, rt.dt, rt.gravity);
-      return this.#energy(copy) - E0;
+      return this.#energy(copy, quiet) - E0;
     };
     const gain = trial(1);
-    this.last.guard.energyGain_uJ = (gain - Math.max(W, 0)) * 1e6;
+    this.last.guard.energyGain_uJ = gain * 1e6;
     if (gain <= allow) return;
     // bisection on the residual scale (5 rounds is 3% resolution)
     let lo = 0, hi = 1;
@@ -159,7 +182,7 @@ export class PhysSim {
       const mid = (lo + hi) / 2;
       if (trial(mid) > allow) hi = mid; else lo = mid;
     }
-    for (let i = 0; i < residual.length; i++) residual[i] *= lo;
+    for (const b of quiet) for (let k = 0; k < 6; k++) residual[6 * b + k] *= lo;
     this.last.guard.energyScale = lo;
   }
 
@@ -659,7 +682,7 @@ export class PhysSim {
     if (this.groundGuard) {
       this.#freeFlight(parts, senders, receivers);
       pivots = this.#pivotRule(parts, ext, actBody);
-      this.#energyRule(residual, ext, actBody, actPoint ?? [0, 0, 0], actForce ?? [0, 0, 0]);
+      this.#energyRule(residual, ext, actBody);
     }
     const prePos = this.state.pos.map((p) => [...p]);
     const preQuat = this.state.quat.map((q) => [...q]);
