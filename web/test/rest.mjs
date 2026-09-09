@@ -35,7 +35,8 @@ const lowest = (sim, b) => {
 
 let fails = 0;
 const names = readdirSync(`${root}web/public/packets`)
-  .filter((f) => f.endsWith(".json") && f !== "index.json").sort();
+  .filter((f) => f.endsWith(".json") && f !== "index.json").sort()
+  .filter((f) => !process.env.REST_SCENE || f.startsWith(process.env.REST_SCENE));
 
 for (const file of names) {
   const packet = JSON.parse(readFileSync(`${root}web/public/packets/${file}`));

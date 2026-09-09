@@ -16,6 +16,9 @@ const QUIESCENT_V = 0.05, QUIESCENT_W = 1.0;
 // A pinch resists rotation: 1/s, so held spin decays with a 0.08 s time
 // constant, about what two fingertips on a pencil feel like.
 const PINCH_DAMPING = 12;
+// A body the guards keep pushing out while it goes nowhere is in a limit
+// cycle, not in motion: 0.5 s of that and settle may claim it.
+const GUARD_HELD_V = 0.06, GUARD_HELD_W = 1.5, GUARD_HELD_STEPS = 30;
 
 export class PhysSim {
   /**
@@ -456,6 +459,21 @@ export class PhysSim {
     for (let b = 0; b < this.B; b++) {
       const v = this.state.linvel[b], w = this.state.angvel[b];
       const standing = Math.abs(segs[b].a[2]) > 0.7071;
+      // Guard-held bodies. A body the guards have to push out on step
+      // after step, while it is going nowhere, is not in motion: it is in
+      // a limit cycle, riding the positional correction. One rode it
+      // 102 mm across the table in 77 s (blind test round 5, IMG_8626;
+      // the CPU backend does not reproduce it, the cycle needs the GPU
+      // backend's slightly different numbers to stay just above the
+      // settle threshold). Count those steps and let settle claim the
+      // body. A body that is falling, being pulled or genuinely sliding
+      // is not slow, so it never qualifies.
+      this.guardHeld ??= new Int32Array(this.B);
+      const pushed = this.last &&
+        (this.last.guard.ground[b] > 1e-5 || this.last.guard.capsule[b] > 1e-5);
+      this.guardHeld[b] = (pushed && b !== actBody &&
+        Math.hypot(...v) < GUARD_HELD_V && Math.hypot(...w) < GUARD_HELD_W)
+        ? this.guardHeld[b] + 1 : 0;
       // Slow motion of a supported body dies quickly in reality (friction
       // decelerates a sliding pencil at ~5 m/s^2, so 8 cm/s is gone in
       // 16 ms); the model instead rings for ~10 steps after every landing
@@ -465,8 +483,9 @@ export class PhysSim {
         for (let q = 0; q < 3; q++) { v[q] *= 0.5; w[q] *= 0.5; }
       // the model's contact response rings at 1-3 cm/s amplitude for a
       // second after a landing; a body that slow on a support is at rest
-      const slow = b !== actBody && supported[b] && !standing && !this.pivoting?.[b] &&
-        Math.hypot(...v) < 0.03 && Math.hypot(...w) < 0.6;
+      const slow = (b !== actBody && supported[b] && !standing && !this.pivoting?.[b] &&
+        Math.hypot(...v) < 0.03 && Math.hypot(...w) < 0.6) ||
+        this.guardHeld[b] >= GUARD_HELD_STEPS;
       this.restCount[b] = slow ? this.restCount[b] + 1 : 0;
       if (this.restCount[b] === SETTLE_STEPS) {
         // The model's contact response equilibrates 2-5 mm above whatever

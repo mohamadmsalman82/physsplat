@@ -258,12 +258,17 @@ renderer.domElement.addEventListener("pointerdown", (e) => {
   local.copy(axis).multiplyScalar(along);
   const attach = local.clone().applyQuaternion(proxies[body].quaternion).add(proxies[body].position);
   drag = { body, local, target: attach.clone(), p0: attach.clone(),
-    t0: performance.now(), moved: false };
+    t0: performance.now(), moved: false, sx: e.clientX, sy: e.clientY, px: 0 };
   diag?.event("pointer_down", { body, local: local.toArray().map((x) => +x.toFixed(4)) });
 });
 renderer.domElement.addEventListener("pointermove", (e) => {
   if (!drag) return;
   drag.moved = true;
+  // travel in screen pixels, not world space: the drag plane is defined by
+  // the camera, so orbit damping still coasting from an earlier gesture
+  // moves the projected target even when the mouse has not moved at all,
+  // which turned a stationary click into a 0.19 m/s flick
+  drag.px = Math.max(drag.px, Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy));
   ray.setFromCamera(ndc(e), cam);
   const n = new THREE.Vector3();
   cam.getWorldDirection(n);
@@ -299,15 +304,13 @@ function startFlick(body, local, dir, speed, distance) {
 let flick = null;
 dbg.flick = (body, local, dir, speed, distance) => startFlick(body, local, dir, speed, distance);
 
-const FLICK_MIN_TRAVEL = 0.006;   // 6 mm: below this a click is a click
+const FLICK_MIN_TRAVEL = 0.006;   // 6 mm in the world
+const FLICK_MIN_PIXELS = 10;      // and 10 px on screen: a click is a click
 
 renderer.domElement.addEventListener("pointerup", () => {
   const delta = drag ? drag.target.clone().sub(drag.p0) : null;
-  // A click that wobbles a pixel is not a flick. Without a travel floor,
-  // a stationary click produced a 0.15-0.17 m/s flick (a blind tester
-  // restacked a whole pile with four clicks), because any pointermove at
-  // all set `moved` and the speed came out of a near-zero interval.
-  if (drag && drag.moved && delta.length() > FLICK_MIN_TRAVEL &&
+  if (drag && drag.moved && drag.px > FLICK_MIN_PIXELS &&
+      delta.length() > FLICK_MIN_TRAVEL &&
       performance.now() - drag.t0 < POKE_MS) {
     const held = Math.max(0.05, (performance.now() - drag.t0) / 1000);
     startFlick(drag.body, drag.local.toArray(), delta.toArray(), delta.length() / held * 1.5,
@@ -477,9 +480,13 @@ async function physicsLoop() {
       const since = performance.now() - lastStepAt;
       const state = dbg.paused ? " | PAUSED (physsplat.paused)"
         : (!loading && since > 3000 ? ` | PHYSICS STALLED ${(since / 1000).toFixed(0)} s` : "");
+      // playback rate, stated rather than hidden: a step costs more than
+      // 1/60 s on most machines, so the scene runs slower than life and a
+      // viewer should know that rather than read it as low gravity
+      const rate = Math.min(1, rt.dt * 1000 / Math.max(stepMs, 1));
       $("stats").textContent =
-        `model step ${runtime.step} | physics ${stepMs.toFixed(0)} ms/step ` +
-        `(${(1000 / Math.max(stepMs, 1)).toFixed(0)} Hz capable)${detail}${state}`;
+        `model step ${runtime.step} | physics ${stepMs.toFixed(0)} ms/step | ` +
+        `${rate.toFixed(2)}x real time${detail}${state}`;
     }, 500);
   } catch (e) { err(e); }
 })();
