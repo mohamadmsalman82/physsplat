@@ -401,6 +401,65 @@ free, 8 GB compressed and swap 91% full, so a rollout fine-tune's few
 gigabytes cannot be had while the desktop is loaded. It needs either a
 quieter machine or some applications closed, not a code change.
 
-## Round 6
+## Round 6 (2026-09-09)
+
+| Visuals | Physics | Interaction | Robustness | Overall |
+|---|---|---|---|---|
+| 6 | 3 | 4 | 7 | 4 |
+
+Every category up, and four of the seven claimed fixes confirmed by
+independent measurement: shadow normal bias read back at 1.5 mm with a
+pencil's shadow meeting its tip, a stationary click moving all four bodies
+0.000 mm, playback rate measured at 0.623 against the HUD's 0.65, and the
+barrel materials verified opaque with blending disabled. It also settled
+an old question: the "see-through pencils" of rounds 4 and 5 were never
+transparency. Turning off shadow casting removed the effect entirely, so
+what looked like x-ray was a contact shadow tracing the occluder's
+silhouette onto the barrel underneath.
+
+It agreed the energy limiter should stay off, having found `energyScale`
+at 1 and `energyGain_uJ` at 0 across eight scene loads and three probe
+suites, and added the better argument: a limiter would have clipped the
+2.8x energy gain it measured on a poke and hidden the fact that the model
+injects energy at contact.
+
+Its two open findings were both right, and both had the same cause: sleep
+was asking whether a body was supported and slow, never whether its pose
+was resolved.
+
+1. **Scenes shipped frozen mid-settle.** A pair of pencils asleep 2.3 and
+   14.8 mm in the air, other barrels 0.5-3.8 mm inside the tabletop, and
+   the panel reporting "resting 4/4, no anomalies" over it. Its proof that
+   the solver could fix it was decisive: one 5 s drag brought every body
+   within 0.9 mm of the table. Sleep now also requires contact within a
+   third of a millimetre, and the hidden pre-roll runs 3 s rather than
+   0.75 s so the pile gets there before anyone sees it.
+2. **The walking pencil was exempt by construction.** The guard-held sleep
+   rule of round 5 needs a body to be going nowhere; this one was going
+   somewhere, 1.86 mm/s. The answer is friction, which the model does not
+   supply: a body touching something, barely moving in every direction,
+   untouched, and slow for ten consecutive steps has its horizontal
+   velocity zeroed. The ten-step count keeps a body that has just lost its
+   support out of it, and a first attempt without that count did break
+   support removal, which is how I know the count matters. A first attempt
+   also gated on floor contact only, and the live GPU build showed the
+   pencil still drifting 50 mm in 25 s because it slides across its
+   neighbours 6 mm up; the gate is now any contact.
+
+Measured on the deployed build afterwards, GPU backend: IMG_8596 and
+IMG_8626 both hold every body at 0.00 mm of drift over 30 s with contact
+gaps of 0.0-0.3 mm and no anomalies. All four scenes pass both regression
+suites in full, the first time that has been true; IMG_8626 is no longer
+a known limitation.
+
+Left open from its report, and worth stating: grab tracking lags 12-38 mm
+on a moving cursor, the diagnostics panel's `lowest_mm` is 1.5-3.9 mm
+optimistic against the drawn mesh because the drawn barrel takes the
+capsule's median radius while the physics body is a particle hull scaled
+at the 95th percentile, and contact response is applied in one 16.7 ms
+step, which is where its 4.4 mm of transient overlap and one-frame angular
+spikes come from.
+
+## Round 7
 
 Pending.
