@@ -483,7 +483,7 @@ async function physicsLoop() {
       // playback rate, stated rather than hidden: a step costs more than
       // 1/60 s on most machines, so the scene runs slower than life and a
       // viewer should know that rather than read it as low gravity
-      const rate = Math.min(1, rt.dt * 1000 / Math.max(stepMs, 1));
+      const rate = Math.min(1, runtime.dt * 1000 / Math.max(stepMs, 1));
       $("stats").textContent =
         `model step ${runtime.step} | physics ${stepMs.toFixed(0)} ms/step | ` +
         `${rate.toFixed(2)}x real time${detail}${state}`;
