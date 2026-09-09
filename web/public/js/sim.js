@@ -492,7 +492,11 @@ export class PhysSim {
       // on the floor, barely moving in every direction, and untouched, so
       // a falling body (large vertical speed) and a pulled one are exempt.
       this.stickCount ??= new Int32Array(this.B);
-      const stickable = b !== actBody && lowestOf[b] < 1e-3 &&
+      // touching anything, not just the floor: the pencil that walked was
+      // sliding across its neighbours 6 mm up, so a floor-only gate left
+      // it exactly as it was
+      const onSomething = Math.min(gap[b], lowestOf[b]) < 1e-3;
+      const stickable = b !== actBody && onSomething &&
         Math.abs(v[2]) < STICTION_VZ && Math.hypot(v[0], v[1]) < STICTION_V &&
         Math.hypot(...w) < STICTION_W;
       // ten consecutive slow steps, so a body that has just lost its
