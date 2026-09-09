@@ -19,23 +19,31 @@ NODE_BUCKET = 256   # pad node count so per-scene shapes don't multiply
 
 
 class LiveSim:
-    # Process-wide default for the free-flight rule (scripts/evaluate.py
-    # --free-flight flips it so the scorecard can be run both ways).
+    # Process-wide defaults for the analytic rules (scripts/evaluate.py
+    # --free-flight / --energy flip them so the scorecard can be run both
+    # ways). Both are physics, not cleanup: they say what the residual is
+    # not allowed to claim, and the demo runs with them on.
     DEFAULT_FREE_FLIGHT = False
+    DEFAULT_ENERGY_RULE = False
 
     def __init__(self, model, normalizer, scene: dict, init: dict, device="cpu",
-                 ground_guard: bool = False, free_flight: bool | None = None):
+                 ground_guard: bool = False, free_flight: bool | None = None,
+                 energy_rule: bool | None = None):
         """scene: offsets_list, mass, inertia (numpy).
         init: pos/quat/linvel/angvel, each (HISTORY, B, ...) numpy warmup.
         ground_guard: analytic non-penetration cleanup for demos (lift a body
         whose particles dip below z=0, cancel downward velocity). Off for
         evaluation so the scorecard measures the model, not the guard.
         free_flight: zero the learned residual for bodies touching nothing
-        (see step); an analytic rule, not a guard, so it may be evaluated."""
+        (see step); an analytic rule, not a guard, so it may be evaluated.
+        energy_rule: scale the residual down when it would add mechanical
+        energy beyond the applied force's work (see step)."""
         self.model, self.norm, self.device = model, normalizer, device
         self.ground_guard = ground_guard
         self.free_flight = (LiveSim.DEFAULT_FREE_FLIGHT if free_flight is None
                             else free_flight)
+        self.energy_rule = (LiveSim.DEFAULT_ENERGY_RULE if energy_rule is None
+                            else energy_rule)
         B = self.B = len(scene["mass"])
         self.offsets = [torch.tensor(o, dtype=torch.float32, device=device)
                         for o in scene["offsets_list"]]
@@ -65,6 +73,54 @@ class LiveSim:
                          for v in init["angvel"]][-C.HISTORY:]
         self.quat_hist = [torch.tensor(q, dtype=torch.float32, device=device)
                           for q in init["quat"]][-C.HISTORY:]
+
+    def _energy(self, pos, quat, linvel, angvel) -> torch.Tensor:
+        """Mechanical energy of the real bodies (J): kinetic + gravitational."""
+        m = self.mass[:self.B, None]
+        I = self.inertia[:self.B]
+        R = quat_to_matrix(quat)
+        w_body = torch.einsum("bij,bi->bj", R, angvel)      # R^T w
+        ke = 0.5 * (m * linvel.pow(2)).sum() + 0.5 * (I * w_body.pow(2)).sum()
+        return ke + (m[:, 0] * C.GRAVITY * pos[:, 2]).sum()
+
+    def _limit_energy(self, residual, act_body, act_point, act_force):
+        """No free energy: contact with static things cannot add mechanical
+        energy to a scene, and an applied force can add only the work it
+        does. The network's residual on out-of-distribution (reconstructed)
+        piles violated that, standing pencils up on their own. Trial-step
+        the scene; if the energy rises by more than the action's work plus a
+        small allowance for pushing out of overlaps, scale the residual down
+        until it does not (bisection, 5 rounds)."""
+        lin, ang = self.lin_hist[-1], self.ang_hist[-1]
+        E0 = self._energy(self.pos, self.quat, lin, ang)
+        work = torch.zeros((), device=self.device)
+        if act_body >= 0:
+            r = act_point - self.pos[act_body]
+            v_point = lin[act_body] + torch.linalg.cross(ang[act_body], r)
+            work = torch.dot(act_force, v_point) * C.DT
+        allow = work.clamp_min(0) + 5e-7
+
+        def gain(scale: float) -> torch.Tensor:
+            ext_l, ext_a = external_accels(
+                self.pos, self.quat, self.mass, self.inertia,
+                act_body, act_point, act_force)
+            p, q, lv, av = step(self.pos, self.quat, lin, ang,
+                                residual * scale, ext_l, ext_a)
+            return self._energy(p, q, lv, av) - E0
+
+        if float(gain(1.0)) <= float(allow):
+            return residual
+        lo, hi = (0.0, 0.0) if float(gain(0.0)) > float(allow) else (0.0, 1.0)
+        for _ in range(5):
+            if hi <= lo:
+                break
+            mid = 0.5 * (lo + hi)
+            if float(gain(mid)) > float(allow):
+                hi = mid
+            else:
+                lo = mid
+        self.energy_scale = lo
+        return residual * lo
 
     def particles_world(self) -> torch.Tensor:
         R = quat_to_matrix(self.quat)
@@ -146,6 +202,9 @@ class LiveSim:
             if not touched.all():
                 keep = torch.tensor(touched, device=self.device).float()[:, None]
                 residual = residual * keep
+
+        if self.energy_rule:
+            residual = self._limit_energy(residual, act_body, pt, fc)
 
         ext_lin, ext_ang = external_accels(
             self.pos, self.quat, self.mass, self.inertia, act_body, pt, fc)

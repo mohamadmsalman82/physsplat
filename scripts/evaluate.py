@@ -64,14 +64,19 @@ def main():
     ap.add_argument("--free-flight", action="store_true",
                     help="zero the learned residual for bodies touching nothing "
                          "(the demo's free-flight rule; see LiveSim)")
+    ap.add_argument("--energy", action="store_true",
+                    help="scale the residual down when it would add mechanical "
+                         "energy beyond the applied force's work (see LiveSim)")
     args = ap.parse_args()
 
-    if args.free_flight:
+    if args.free_flight or args.energy:
         from physsplat.model.live import LiveSim
-        LiveSim.DEFAULT_FREE_FLIGHT = True
+        LiveSim.DEFAULT_FREE_FLIGHT = args.free_flight
+        LiveSim.DEFAULT_ENERGY_RULE = args.energy
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     agg = run_scorecard(args.checkpoint, args.n, device, args.data)
     agg["free_flight"] = bool(args.free_flight)
+    agg["energy_rule"] = bool(args.energy)
 
     print("\n===== SCORECARD =====")
     for k, v in agg.items():

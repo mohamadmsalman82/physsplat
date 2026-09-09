@@ -57,6 +57,33 @@ def test_livesim_padding_transparent():
     np.testing.assert_allclose(outs[0], outs[1], atol=1e-6)
 
 
+def test_energy_rule_forbids_free_energy():
+    """A residual that lifts every body (the failure the rule exists for:
+    the network reading a pile as supported and pushing it up) must be
+    scaled until the scene's mechanical energy stops rising."""
+    torch.manual_seed(0)
+    rng = np.random.default_rng(3)
+    model = Simulator(latent=32, layers=2).eval()
+    scene, init = _scene(rng, B=3)
+    rises = []
+    for rule in (False, True):
+        norm = Normalizer("data/stats.json")
+        # every body pushed up at 4 g, an unmistakable energy source
+        norm.denorm_target = lambda p: torch.tensor(
+            [[0.0, 0.0, 4 * C.GRAVITY, 0.0, 0.0, 0.0]] * 3)
+        sim = LiveSim(model, norm, scene, init, "cpu", energy_rule=rule)
+        worst = -1e9
+        with torch.no_grad():
+            for _ in range(10):
+                E0 = sim._energy(sim.pos, sim.quat, sim.lin_hist[-1], sim.ang_hist[-1])
+                sim.step()
+                E1 = sim._energy(sim.pos, sim.quat, sim.lin_hist[-1], sim.ang_hist[-1])
+                worst = max(worst, float(E1 - E0))
+        rises.append(worst)
+    assert rises[0] > 1e-5, f"stub residual should add energy ({rises[0]:.2e} J)"
+    assert rises[1] <= 5.1e-7, f"rule let energy rise by {rises[1]:.2e} J"
+
+
 def test_free_flight_rule_is_exact_gravity():
     """A body touching nothing must fall at exactly g under the free-flight
     rule, whatever the (here untrained, random) network says; the same
