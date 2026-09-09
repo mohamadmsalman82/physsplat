@@ -70,18 +70,25 @@ def main():
                          "see LiveSim._limit_energy)")
     ap.add_argument("--smooth", action="store_true",
                     help="two-tap mean of the residual: cancels the "
-                         "step-alternating contact ringing (see LiveSim.step)")
+                         "step-alternating contact ringing (measured and "
+                         "rejected; see LiveSim.step)")
+    ap.add_argument("--fade", action="store_true",
+                    help="fade the angular residual to zero at the contact "
+                         "radius: contact torque must vanish as a body "
+                         "separates (see LiveSim.step)")
     args = ap.parse_args()
 
     from physsplat.model.live import LiveSim
     LiveSim.DEFAULT_FREE_FLIGHT = args.free_flight
     LiveSim.DEFAULT_ENERGY_RULE = args.energy
     LiveSim.DEFAULT_SMOOTH = args.smooth
+    LiveSim.DEFAULT_FADE = args.fade
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     agg = run_scorecard(args.checkpoint, args.n, device, args.data)
     agg["free_flight"] = bool(args.free_flight)
     agg["energy_rule"] = bool(args.energy)
     agg["smooth"] = bool(args.smooth)
+    agg["fade"] = bool(args.fade)
 
     print("\n===== SCORECARD =====")
     for k, v in agg.items():

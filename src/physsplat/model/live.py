@@ -28,6 +28,7 @@ class LiveSim:
     DEFAULT_FREE_FLIGHT = False
     DEFAULT_ENERGY_RULE = False    # measured and rejected; see _limit_energy
     DEFAULT_SMOOTH = False
+    DEFAULT_FADE = False
 
     def __init__(self, model, normalizer, scene: dict, init: dict, device="cpu",
                  ground_guard: bool = False, free_flight: bool | None = None,
@@ -48,6 +49,7 @@ class LiveSim:
         self.energy_rule = (LiveSim.DEFAULT_ENERGY_RULE if energy_rule is None
                             else energy_rule)
         self.smooth = LiveSim.DEFAULT_SMOOTH if smooth is None else smooth
+        self.fade = LiveSim.DEFAULT_FADE
         self.prev_residual = None
         B = self.B = len(scene["mass"])
         self.offsets = [torch.tensor(o, dtype=torch.float32, device=device)
@@ -222,6 +224,29 @@ class LiveSim:
             if not touched.all():
                 keep = torch.tensor(touched, device=self.device).float()[:, None]
                 residual = residual * keep
+
+        if self.fade:
+            # Contact torque must vanish as a body separates; the model's
+            # does not, so a body lifted off a pile keeps receiving
+            # hundreds of rad/s^2 across millimetres of gap. Fade the
+            # angular part to zero at the contact radius, where the
+            # free-flight rule takes over. Linear is untouched: it holds
+            # the pile up. Gap here is the nearest particle of any other
+            # body or of the floor, the same neighbourhood the model sees.
+            gaps = np.full(self.B, np.inf, np.float32)
+            zmin = np.full(self.B, np.inf, np.float32)
+            np.minimum.at(zmin, self.body_ids_np, parts_np[:, 2])
+            if len(s_np):
+                bs_, br_ = self.body_ids_np[s_np], self.body_ids_np[r_np]
+                cross = bs_ != br_
+                if cross.any():
+                    d = np.linalg.norm(parts_np[s_np[cross]] - parts_np[r_np[cross]], axis=1)
+                    np.minimum.at(gaps, bs_[cross], d)
+                    np.minimum.at(gaps, br_[cross], d)
+            gaps = np.minimum(gaps, zmin)
+            fade = np.clip(1.0 - gaps / C.CONTACT_RADIUS, 0.0, 1.0)
+            f = torch.tensor(fade, dtype=torch.float32, device=self.device)[:, None]
+            residual = torch.cat([residual[:, :3], residual[:, 3:] * f], -1)
 
         if self.smooth:
             # Contact forces do not reverse every step. This one does: on a
