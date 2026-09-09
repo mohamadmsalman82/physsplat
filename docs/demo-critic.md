@@ -460,6 +460,42 @@ at the 95th percentile, and contact response is applied in one 16.7 ms
 step, which is where its 4.4 mm of transient overlap and one-frame angular
 spikes come from.
 
+## Player feedback (2026-09-09)
+
+Not a scored round: three complaints from someone playing the deployed
+demo. All three had causes worth writing down.
+
+**"Very jittery if I try to move it with my cursor."** Two causes. The
+physics runs at about half real time, so between steps the cursor jumps
+centimetres and the spring received a hard yank, overshot, and shook; the
+grab now follows a rate-limited point moving at 0.30 m/s, the speed grabs
+were generated at, which also keeps the model's action input in
+distribution. And the renderer lerped between the last two physics states
+over a fixed window, so at step times of 24-73 ms it reached the newer
+state and froze until the next arrived. It now chases the latest state
+exponentially at a rate set by the frame time. Measured after: one jitter
+episode per drag, against three before.
+
+**"Sometimes the pencils just hover."** The drawn barrel used the capsule's
+MEDIAN particle radius, 3.9 mm, while the physics body reaches 5.6 mm at
+the grip. A pencil the ground rule held exactly on the table was therefore
+drawn 1.7 mm above it, every time. The mesh now reads the radius profile
+off the particles: barrel 4.7-5.1 mm and grip 5.2-6.0 mm placed where the
+fattest particles are, which matches both a real Matic Grip and what
+actually touches.
+
+**"Sometimes they sink inside the table."** The same mismatch from the
+other side: the clip stood 0.9 mm proud of the drawn barrel and the grip
+0.3 mm, so whichever faced down passed through the surface. Both now sit
+inside the barrel, and nothing drawn lies outside the body the ground rule
+holds.
+
+**"They don't fall fully flat."** A physics cause as well: the balance test
+allowed the centre of mass 6 mm outside its support before tipping, enough
+for a pencil to see-saw on a single crossing indefinitely. A crossing
+contact patch is a couple of millimetres wide, so the tolerance is 2 mm and
+a pencil now tips until an end reaches the table.
+
 ## Round 7
 
 Pending.
