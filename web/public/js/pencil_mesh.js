@@ -43,9 +43,12 @@ const GREY = [0.30, 0.31, 0.34];        // grip rubber
 const CLIP_GREY = [0.38, 0.39, 0.42];
 const ERASER = [0.94, 0.93, 0.88];
 const LEAD = [0.13, 0.13, 0.14];
-// how far to push the barrel away from neutral. Reconstruction colours come
-// back washed out, so a grey-blue barrel reads as plain grey without this.
-const CHROMA = 1.9;
+// How far to push a near-neutral barrel away from grey. Reconstruction
+// colours come back washed out and a grey-blue barrel otherwise reads as
+// plain grey. The boost has to fade out with saturation: applied flat it
+// also turned the salmon pencil red and the orange one fluorescent, which
+// is further from the real object than the problem it was fixing.
+const CHROMA = 1.9, CHROMA_FADE = 0.35;
 
 const solid = (geo, rgb) => {
   const n = geo.getAttribute("position").count;
@@ -82,9 +85,13 @@ function barrelColour(colors) {
   // lift it a little: reconstruction colours come back darker than the object
   const lit = best.map((x) => Math.min(1, (x / 255) * 1.25 + 0.06));
   // and push it away from grey about its own luminance, so a barrel that is
-  // genuinely close to neutral still shows which way it leans
+  // genuinely close to neutral still shows which way it leans. A barrel that
+  // already has colour is left alone.
+  const hi = Math.max(...lit), lo = Math.min(...lit);
+  const sat = hi > 0 ? (hi - lo) / hi : 0;
+  const k = 1 + (CHROMA - 1) * Math.max(0, 1 - sat / CHROMA_FADE);
   const lum = 0.299 * lit[0] + 0.587 * lit[1] + 0.114 * lit[2];
-  return lit.map((x) => Math.min(1, Math.max(0, lum + (x - lum) * CHROMA)));
+  return lit.map((x) => Math.min(1, Math.max(0, lum + (x - lum) * k)));
 }
 
 /**
