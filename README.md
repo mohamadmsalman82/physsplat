@@ -26,6 +26,16 @@ Three ideas carry the project:
 
 Training data is manufactured, not collected: PyBullet simulates thousands of randomized scenes (stacks, scatters, drops, random pokes) and the network learns to imitate it — from a photo-compatible representation.
 
+## What the network is not allowed to claim
+
+A learned simulator run far outside its training distribution (photo-reconstructed pencils, not PyBullet capsules) will assert things that are not physics. Rather than hide that, the demo states the invariants explicitly and lets the diagnostics show when they bind:
+
+- **Free flight.** A body touching nothing feels only gravity and the applied force, so its learned residual is zero. Without this a released pencil hovered: the network had never seen a motionless unsupported body.
+- **No free energy.** Contact with static things cannot add mechanical energy, and an applied force adds only the work it does. Each step is trial-integrated and the residual scaled down if it would break that. Without this a resting pencil reared up to 89° on its own.
+- **Support and pivot.** Support is counted only from below; a body whose centre of mass is outside its support polygon swings about the nearest support edge until it lies flat, instead of balancing on its end.
+
+Everything these rules do is recorded per step and visible in the diagnostics, so a reader can always tell the model's answer from the correction ([`docs/diagnostics.md`](docs/diagnostics.md)). `scripts/evaluate.py --free-flight --energy` scores the model with the rules on, so their effect is measured, not assumed.
+
 ## Status
 
 Early development, built in phases (each ends with a runnable artifact):
@@ -44,6 +54,8 @@ Early development, built in phases (each ends with a runnable artifact):
 
 - [`docs/PhysSplat.pdf`](docs/PhysSplat.pdf) — the design document: full architecture, the mathematics of the learned simulator, data spec, evaluation plan.
 - [`docs/PhysSplat-Tutorial.pdf`](docs/PhysSplat-Tutorial.pdf) — a 70-step build guide with background theory, per-step checkpoints, and common traps.
+- [`docs/diagnostics.md`](docs/diagnostics.md) — the demo's diagnostic API: per-step motion and contact data, anomaly detectors, and scripted probes that measure grabs, drops and support removal.
+- [`docs/demo-critic.md`](docs/demo-critic.md) — the blind-tester ledger: what each round scored, what it measured, and what changed.
 
 ## Repository layout
 
