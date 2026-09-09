@@ -535,6 +535,50 @@ particle hull's fattest band and the barrel follows from the real pencil's
 11 mm over 9 mm ratio, so nothing drawn lies outside the body the ground
 rule holds.
 
+## What the pencil rewrite found underneath (2026-09-09)
+
+Building the 1:1 pencil needed a test that the drawing and the physics
+agree about where the object's surface is, since the hovering and sinking
+reports were exactly that disagreement and no physics test could see
+either. `web/test/mesh.mjs` compares them as support functions, which is
+the same projection the ground rule computes, so its output is literally
+how far the drawing hangs below the lowest particle.
+
+Writing it turned up three more defects in the drawing, all fixed: the
+pencil was centred on the body origin while the particles are offsets from
+the centre of mass and sit up to 9.3 mm off it, so it overhung the short
+end by up to 19 mm; the reconstructions' cross-sections are elliptical at
+about 1.4 to 1, so a round pencil drawn at the fattest particle reached 1
+to 2 mm outside them; and which end got the point was taken from the
+fattest particle band, which a lumpy reconstruction gets backwards.
+Flat-lying escape went from 2.58 mm to 0.000 mm on all four scenes.
+
+It also turned up something the demo cannot fix. The reconstructions are
+poor pencils in ways that reach the screen because the physics samples
+them: they taper over their last 10 to 15 mm where a real Matic Grip is
+straight, nine of the seventeen bodies do not distinguish their two ends
+by even 0.3 mm of mean radius, and reconstructed lengths run 99 to 150 mm
+for an object that is always 150.
+
+`cylinder-bodies` is a branch that fixes this at the source, sampling the
+physics particles off a cylinder of the known radius rather than off the
+convex hull of the reconstruction. It measures better on everything it was
+written for: drawn-to-simulated standoff 2.28 mm to 0.33 mm, tilted escape
+6.09 mm to 2.73 mm, masses 6.3 to 8.1 g where the hull gave 4.1 to 5.7 g
+against a real pencil's 6.2, and every scene starting with its lowest
+particle at 0.00 mm once the scene is grounded on the particles instead of
+on the reconstruction's vertices.
+
+It is not merged, for two measured reasons and one structural one.
+IMG_8513's fast pull tunnels 2.1 mm against a 1.5 mm bar, up from 0.9 mm,
+and it is not the guard running out of passes (24 passes gives the same
+number) but larger transient mid-step overlap between fatter bodies.
+IMG_8626's body 0 will not lift clear of the pile. And a cylinder is
+symmetric, so the drawing loses every geometric cue for which end is the
+point; that has to come from the render colours, the white eraser and the
+dark lead, before it can ship. Recorded here so the next round starts from
+the numbers rather than rediscovering them.
+
 ## Round 7
 
 Pending.
