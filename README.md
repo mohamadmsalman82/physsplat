@@ -31,10 +31,10 @@ Training data is manufactured, not collected: PyBullet simulates thousands of ra
 A learned simulator run far outside its training distribution (photo-reconstructed pencils, not PyBullet capsules) will assert things that are not physics. Rather than hide that, the demo states the invariants explicitly and lets the diagnostics show when they bind:
 
 - **Free flight.** A body touching nothing feels only gravity and the applied force, so its learned residual is zero. Without this a released pencil hovered: the network had never seen a motionless unsupported body.
-- **No free energy.** Contact with static things cannot add mechanical energy, and an applied force adds only the work it does. Each step is trial-integrated and the residual scaled down if it would break that. Without this a resting pencil reared up to 89° on its own.
 - **Support and pivot.** Support is counted only from below; a body whose centre of mass is outside its support polygon swings about the nearest support edge until it lies flat, instead of balancing on its end.
+- **No free energy — written, measured, and turned off.** Contact with static things cannot add mechanical energy, and an applied force adds only the work it does. Each step is trial-integrated and the residual scaled down if it would break that. It fixes what it was written for (a resting pencil reared to 89° on its own) and still costs more than it buys: 42.4 composite against 62.3 for free flight alone, because a rule that cannot separate a spurious energy gain from a real one also damps genuine collision response. The rearing is prevented by support-and-pivot instead. It stays behind `--energy` so the number is reproducible.
 
-Everything these rules do is recorded per step and visible in the diagnostics, so a reader can always tell the model's answer from the correction ([`docs/diagnostics.md`](docs/diagnostics.md)). `scripts/evaluate.py --free-flight --energy` scores the model with the rules on, so their effect is measured, not assumed.
+Everything these rules do is recorded per step and visible in the diagnostics, so a reader can always tell the model's answer from the correction ([`docs/diagnostics.md`](docs/diagnostics.md)). `scripts/evaluate.py` exposes each rule as a flag, so every one of them was scored on the synthetic test set before being kept or dropped — two were dropped.
 
 ## Status
 
@@ -48,7 +48,7 @@ Early development, built in phases (each ends with a runnable artifact):
 - [x] **Phase 5** — local interactive demo (WebSocket server + three.js client, closed-loop spring grabs)
 - [x] **Phase 6** — photo → scene pipeline: TripoSR reconstruction, RANSAC line segmentation of pencils, four real-photo scenes packeted
 - [x] **Phase 7** — in-browser physics: race-free ONNX export, JS runtime parity-verified to microns against Python, then a custom WebGPU backend (hand-written WGSL kernels, ~7x faster than ONNX Runtime Web) so a 4-5 pencil scene steps at 12-16 Hz on an M-series laptop
-- [x] **Phase 8** — public deployment on Vercel, plus a blind-tester loop: an independent agent plays the live demo, scores it harshly, and its findings drive the next round of fixes (`docs/demo-critic.md`). Five rounds so far; every fix it prompted is now covered by a headless regression test that drives the browser simulator with no page (`web/test/rest.mjs`, `web/test/interact.mjs`), and every analytic rule it prompted was scored on the synthetic test set before being kept or dropped.
+- [x] **Phase 8** — public deployment on Vercel, plus a blind-tester loop: an independent agent plays the live demo, scores it harshly, and its findings drive the next round of fixes (`docs/demo-critic.md`). Six rounds so far, plus reports from a human playing it, which caught things the automated rounds had not isolated: jitter under a moving cursor, pencils hovering and sinking because the drawn barrel and the simulated body disagreed about the surface by 1.7 mm, and tunnelling under fast pulls and high drops. Every fix is covered by a headless regression test that drives the browser simulator with no page (`web/test/rest.mjs`, `web/test/interact.mjs`), and every analytic rule was scored on the synthetic test set before being kept or dropped.
 
 ## Documentation
 
