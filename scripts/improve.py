@@ -160,9 +160,11 @@ def main():
     else:
         print("== baseline ==", flush=True)
         best = run_scorecard(best_ckpt, args.n, device, args.data, quiet=True)
+        best["rules"] = bool(args.rules)      # which simulator the number is for
         ledger.append({"id": best_id, "checkpoint": args.base, "step": best["step"],
-                       "n": args.n, "change": "baseline for improve loop",
-                       "parent": "", "agg": best})
+                       "n": args.n, "parent": "", "agg": best,
+                       "change": "baseline for improve loop"
+                                 + (" (free flight + angular fade)" if args.rules else "")})
         print(f"baseline composite {best['composite']:.1f}", flush=True)
 
     rejected_from = {(best_id, name) for name in args.skip.split(",") if name}
@@ -186,6 +188,7 @@ def main():
         accept = agg["composite"] > best["composite"] + args.margin
         reason = (f"composite {best['composite']:.1f} -> {agg['composite']:.1f}"
                   + (" (accepted)" if accept else f" (< margin {args.margin})"))
+        agg["rules"] = bool(args.rules)
         ledger.append({"id": exp_id, "checkpoint": ckpt, "step": agg["step"],
                        "n": args.n, "change": f"{name}: {params}",
                        "parent": best_id, "agg": agg, "deltas": d,

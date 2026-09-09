@@ -1,30 +1,29 @@
 # PhysSplat evaluation report
 
-_18 records; regenerated 2026-09-08 22:19_
+_21 records; regenerated 2026-09-09 02:19_
 
 ## Leaderboard (composite 0-100)
 
 | # | id | step | composite | stability | trans_150 | surface_pen | support_jaccard | change |
 |---|---|---|---|---|---|---|---|---|
-| 1 | final_v2_freeflight | 150000 | 62.3 | 0.83 | 2.1cm | 1.73mm | 0.60 | free-flight rule: zero residual for bodies touching nothing (analytic) |
-| 2 | exp3_rest_k24_long | 150000 | 61.0 | 0.83 | 2.2cm | 1.57mm | 0.50 | rest_k24_long: {'K': 24, 'lr': 3e-06, 'rest_only': True, 'steps': 6000} |
-| 3 | exp1_rest_k24 | 150000 | 58.7 | 0.71 | 2.1cm | 2.18mm | 0.60 | rest_k24: {'K': 24, 'lr': 3e-06, 'rest_only': True} |
-| 4 | exp2_mixed_k12 | 150000 | 58.5 | 0.75 | 2.1cm | 2.43mm | 0.60 | mixed_k12: {'K': 12, 'lr': 3e-06} |
-| 5 | exp1_mixed_k12 | 150000 | 58.3 | 0.79 | 2.1cm | 2.47mm | 0.60 | mixed_k12: {'K': 12, 'lr': 3e-06} |
-| 6 | exp1_rest_k24 | 150000 | 57.3 | 0.67 | 2.3cm | 1.91mm | 0.60 | rest_k24: {'K': 24, 'lr': 3e-06, 'rest_only': True} |
-| 7 | exp1_rest_k24_long | 150000 | 56.7 | 0.75 | 2.6cm | 1.60mm | 0.40 | rest_k24_long: K=24 rest-only, 6000 iters |
-| 8 | exp1_mixed_k12 | 150000 | 54.1 | 0.71 | 2.5cm | 2.29mm | 0.50 | mixed_k12: {'K': 12, 'lr': 3e-06} |
-| 9 | exp2_rollout_k12 | 150000 | 49.5 | 0.46 | 2.4cm | 1.96mm | 0.50 | rollout_k12: {'K': 12, 'lr': 3e-06} |
-| 10 | exp1_rollout_k8_long | 150000 | 47.2 | 0.46 | 2.3cm | 2.46mm | 0.50 | rollout_k8_long: {'K': 8, 'lr': 5e-06, 'steps': 6000} |
-| 11 | exp5_rollout_k8 | 150000 | 44.1 | 0.42 | 3.9cm | 2.27mm | 0.60 | rollout_k8: {'K': 8, 'lr': 5e-06} |
-| 12 | exp1_rollout_k4 | 150000 | 36.6 | 0.33 | 3.6cm | 3.46mm | 0.50 | rollout_k4: {'K': 4, 'lr': 1e-05} |
+| 1 | final_v2_ff_fade | 150000 | 63.6 | 0.83 | 1.9cm | 1.53mm | 0.60 | angular contact fade: torque vanishes as a body separates |
+| 2 | final_v2_freeflight | 150000 | 62.3 | 0.83 | 2.1cm | 1.73mm | 0.60 | free-flight rule: zero residual for bodies touching nothing (analytic) |
+| 3 | exp3_rest_k24_long | 150000 | 61.0 | 0.83 | 2.2cm | 1.57mm | 0.50 | rest_k24_long: {'K': 24, 'lr': 3e-06, 'rest_only': True, 'steps': 6000} |
+| 4 | exp1_rest_k24 | 150000 | 58.7 | 0.71 | 2.1cm | 2.18mm | 0.60 | rest_k24: {'K': 24, 'lr': 3e-06, 'rest_only': True} |
+| 5 | exp2_mixed_k12 | 150000 | 58.5 | 0.75 | 2.1cm | 2.43mm | 0.60 | mixed_k12: {'K': 12, 'lr': 3e-06} |
+| 6 | exp1_mixed_k12 | 150000 | 58.3 | 0.79 | 2.1cm | 2.47mm | 0.60 | mixed_k12: {'K': 12, 'lr': 3e-06} |
+| 7 | exp1_rest_k24 | 150000 | 57.3 | 0.67 | 2.3cm | 1.91mm | 0.60 | rest_k24: {'K': 24, 'lr': 3e-06, 'rest_only': True} |
+| 8 | exp1_rest_k24_long | 150000 | 56.7 | 0.75 | 2.6cm | 1.60mm | 0.40 | rest_k24_long: K=24 rest-only, 6000 iters |
+| 9 | exp1_mixed_k12 | 150000 | 54.1 | 0.71 | 2.5cm | 2.29mm | 0.50 | mixed_k12: {'K': 12, 'lr': 3e-06} |
+| 10 | exp2_rollout_k12 | 150000 | 49.5 | 0.46 | 2.4cm | 1.96mm | 0.50 | rollout_k12: {'K': 12, 'lr': 3e-06} |
+| 11 | final_v2_ff_energy_q | 150000 | 48.1 | 0.42 | 2.3cm | 1.99mm | 0.40 | energy rule restricted to quiescent bodies (was policing every impact) |
+| 12 | exp1_rollout_k8_long | 150000 | 47.2 | 0.46 | 2.3cm | 2.46mm | 0.50 | rollout_k8_long: {'K': 8, 'lr': 5e-06, 'steps': 6000} |
 
 ## Trend (evaluation order)
 
 | time | id | step | composite | stability | trans_150 | axis_150 | surface_pen | support_jaccard | post_action_err | explosion | photo_drift |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | 2026-09-08 01:14 | run01@150000 | 150000 | 31.494 | 0.167 | 0.042 | 0.269 | 0.003 | 0.417 | 0.800 | 0.292 | 0.021 |
-| 2026-09-08 01:18 | base@150000 | 150000 | 31.469 | 0.167 | 0.042 | 0.269 | 0.003 | 0.417 | 0.799 | 0.292 | 0.021 |
 | 2026-09-08 01:28 | exp1_noise_2e-3 | 153000 | 22.535 | 0.125 | 0.191 | 0.396 | 0.003 | 0.325 | 1.069 | 0.292 | 0.010 |
 | 2026-09-08 01:43 | exp1_rollout_k4 | 150000 | 36.552 | 0.333 | 0.036 | 0.260 | 0.003 | 0.500 | 0.575 | 0.292 | 0.012 |
 | 2026-09-08 01:51 | exp2_noise_5e-4 | 153000 | 23.964 | 0.000 | 0.062 | 0.243 | 0.002 | 0.239 | 0.704 | 0.292 | 0.072 |
@@ -41,6 +40,10 @@ _18 records; regenerated 2026-09-08 22:19_
 | 2026-09-08 08:49 | exp2_mixed_k12 | 150000 | 58.451 | 0.750 | 0.021 | 0.175 | 0.002 | 0.600 | 0.264 | 0.208 | 0.010 |
 | 2026-09-08 10:19 | exp3_rest_k24_long | 150000 | 60.981 | 0.833 | 0.022 | 0.177 | 0.002 | 0.500 | 0.199 | 0.250 | 0.009 |
 | 2026-09-08 22:19 | final_v2_freeflight | 150000 | 62.264 | 0.833 | 0.021 | 0.186 | 0.002 | 0.600 | 0.290 | 0.250 | 0.009 |
+| 2026-09-09 00:09 | final_v2_ff_energy | 150000 | 42.357 | 0.375 | 0.029 | 0.210 | 0.002 | 0.271 | 0.570 | 0.167 | 0.018 |
+| 2026-09-09 00:21 | final_v2_ff_energy_q | 150000 | 48.089 | 0.417 | 0.023 | 0.194 | 0.002 | 0.400 | 0.221 | 0.167 | 0.017 |
+| 2026-09-09 00:40 | final_v2_ff_smooth | 150000 | 34.247 | 0.208 | 0.027 | 0.299 | 0.003 | 0.250 | 0.236 | 0.208 | 0.030 |
+| 2026-09-09 01:17 | final_v2_ff_fade | 150000 | 63.557 | 0.833 | 0.019 | 0.180 | 0.002 | 0.600 | 0.276 | 0.250 | 0.017 |
 
 ## Experiment decisions
 
@@ -73,14 +76,14 @@ _18 records; regenerated 2026-09-08 22:19_
 - **exp3_rest_k24_long** (rest_k24_long: {'K': 24, 'lr': 3e-06, 'rest_only': True, 'steps': 6000}) from exp1_mixed_k12: **ACCEPT** -- composite 58.3 -> 61.0 (accepted)  
   deltas: composite +2.674, stability +0.042, trans_150 +0.001, surface_pen -0.001, support_jaccard -0.100
 
-## Per-regime breakdown of leader `final_v2_freeflight`
+## Per-regime breakdown of leader `final_v2_ff_fade`
 
 | regime | n | trans_150 | stability | surface_pen |
 |---|---|---|---|---|
-| bundle | 3 | 0.9cm | 1.00 | 2.71mm |
-| crosshatch | 2 | 4.6cm | 1.00 | 7.57mm |
-| drop | 3 | 6.9cm | 0.00 | 0.41mm |
-| pile | 1 | 10.7cm | 0.00 | 3.63mm |
-| pyramid | 6 | 0.2cm | 1.00 | 2.24mm |
+| bundle | 3 | 0.9cm | 1.00 | 2.73mm |
+| crosshatch | 2 | 2.2cm | 1.00 | 5.64mm |
+| drop | 3 | 6.9cm | 0.00 | 0.29mm |
+| pile | 1 | 10.8cm | 0.00 | 3.19mm |
+| pyramid | 6 | 0.2cm | 1.00 | 2.20mm |
 | scattered | 5 | 0.5cm | 1.00 | 0.00mm |
-| stack | 4 | 0.5cm | 1.00 | 0.00mm |
+| stack | 4 | 0.6cm | 1.00 | 0.00mm |
