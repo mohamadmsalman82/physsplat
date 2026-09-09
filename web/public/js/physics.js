@@ -302,7 +302,12 @@ export function distToHull2D(p, pts) {
  * hinge point (nearest point of the support polygon's boundary) for the
  * pivot rule.
  */
-export function supportAnalysis(com, points, tol = 6e-3) {
+/** `tol` is the half-width a contact patch effectively spans. It was 6 mm,
+ * which let a pencil balance like a see-saw on a single crossing and stay
+ * there: the thing a player describes as "it doesn't fall flat on the
+ * table". A pencil crossing another touches over a patch a couple of
+ * millimetres wide, so 2 mm, and anything further off tips. */
+export function supportAnalysis(com, points, tol = 2e-3) {
   if (!points.length) return { n: 0, balanced: false, dist: Infinity, spread: 0, hinge: null };
   let spread = 0;
   for (let i = 0; i < points.length; i++) for (let j = i + 1; j < points.length; j++)

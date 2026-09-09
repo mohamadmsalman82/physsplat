@@ -220,17 +220,35 @@ function syncTransforms() {
   });
 }
 
-const _qa = new THREE.Quaternion(), _qb = new THREE.Quaternion();
+/**
+ * Physics steps land irregularly (24-73 ms), so lerping between the last
+ * two states over a fixed window reaches the newer one and then freezes
+ * until the next arrives: the stutter a player reads as jitter. Chase the
+ * latest state exponentially instead, at a rate set by the frame time, so
+ * the drawn pose is continuous whatever the step timing does.
+ */
+const _qb = new THREE.Quaternion();
+const RENDER_TAU = 0.045;         // seconds to close ~63% of the gap
+let lastFrame = performance.now();
 function renderInterpolated() {
   if (!currState || groups.length !== currState.pos.length) return;
-  const alpha = Math.min(1, (performance.now() - stateTime) / (stateDt * 1000));
+  const now = performance.now();
+  const dt = Math.min(0.1, (now - lastFrame) / 1000);
+  lastFrame = now;
+  const k = 1 - Math.exp(-dt / RENDER_TAU);
   currState.pos.forEach((p, i) => {
-    const q0 = prevState.pos[i];
-    groups[i].position.set(
-      q0[0] + (p[0] - q0[0]) * alpha, q0[1] + (p[1] - q0[1]) * alpha,
-      q0[2] + (p[2] - q0[2]) * alpha);
-    _qa.set(...prevState.quat[i]); _qb.set(...currState.quat[i]);
-    groups[i].quaternion.copy(_qa.slerp(_qb, alpha));
+    const g = groups[i];
+    if (!g.userData.shown) {            // first frame of a scene: snap
+      g.position.set(p[0], p[1], p[2]);
+      g.quaternion.set(...currState.quat[i]);
+      g.userData.shown = true;
+      return;
+    }
+    g.position.x += (p[0] - g.position.x) * k;
+    g.position.y += (p[1] - g.position.y) * k;
+    g.position.z += (p[2] - g.position.z) * k;
+    _qb.set(...currState.quat[i]);
+    g.quaternion.slerp(_qb, k);
   });
 }
 
@@ -283,6 +301,8 @@ renderer.domElement.addEventListener("pointermove", (e) => {
 // a pencil follows the cursor within ~1-2 cm instead of ~6 cm of stretch.
 // Forces stay under the same 3 m g cap the model was trained with.
 const GRAB = { omega: 28, zeta: 1.0 };
+// the grab target's own speed limit, the speed grabs were generated at
+const FOLLOW_SPEED = 0.30;
 const POKE_MS = 350;    // a press shorter than this that moved is a flick
 
 /**
@@ -337,6 +357,7 @@ function resetScene() {
   syncTransforms();
   resetCamera();
   preroll = PREROLL_STEPS;
+  groups.forEach((g) => { g.userData.shown = false; });   // snap, don't slide back
 }
 $("reset").onclick = resetScene;
 
@@ -381,9 +402,21 @@ async function physicsLoop() {
       actInfo = { kind: "poke", body: poke.body, force: poke.force };
     } else if (drag && performance.now() - drag.t0 >= POKE_MS) {
       const wp = worldGrabPoint(drag).toArray();
-      const f = springForce(drag.body, wp, drag.target.toArray());
+      // Follow the cursor through a rate-limited point rather than
+      // snapping to it. The physics runs at ~0.5x real time, so between
+      // steps the cursor can jump centimetres; feeding that straight to
+      // the spring gave a hard yank, an overshoot and a visible shake.
+      // The follow point moves at most FOLLOW_SPEED, which is the speed a
+      // grab was trained to move at, so what the model sees stays in
+      // distribution too.
+      drag.follow ??= drag.p0.clone();
+      const step = drag.target.clone().sub(drag.follow);
+      const maxStep = FOLLOW_SPEED * rt.dt;
+      if (step.length() > maxStep) step.setLength(maxStep);
+      drag.follow.add(step);
+      const f = springForce(drag.body, wp, drag.follow.toArray());
       act = [drag.body, wp, f];
-      actInfo = { kind: "grab", body: drag.body, force: f, point: wp, target: drag.target.toArray() };
+      actInfo = { kind: "grab", body: drag.body, force: f, point: wp, target: drag.follow.toArray() };
     } else if (flick) {
       // carry the grab point along the flick at its speed, then release
       flick.travelled += flick.speed * rt.dt;

@@ -12,7 +12,7 @@
 import * as THREE from "three";
 
 const TIP_LEN = 0.009;        // metal cone, m
-const GRIP_LEN = 0.028, GRIP_FROM_TIP = 0.010, GRIP_BULGE = 0.0003;
+const GRIP_LEN = 0.028, GRIP_FROM_TIP = 0.010, GRIP_BULGE = 0.0002;
 const CLIP_LEN = 0.024, CLIP_W = 0.0026, CLIP_T = 0.0009, CLIP_FROM_END = 0.004;
 
 /** Nearest packet vertex colour for a body-frame point (the bands vary
@@ -49,9 +49,47 @@ function colorize(geo, sampler, transform, tint = 1) {
  */
 export function buildPencil(body) {
   const cap = body.capsule;
-  const r = cap.radius, half = cap.half;
-  const L = 2 * half + 2 * r;                       // full physical length
   const axis = new THREE.Vector3(...cap.axis).normalize();
+  // The drawn pencil must be the same size as the body the physics moves,
+  // or it will hover above the table or sink into it while the numbers say
+  // it is exactly in contact. `capsule.radius` is the MEDIAN radial
+  // distance of the physics particles, so a barrel drawn at that radius
+  // floats about half a millimetre above the particle that the ground rule
+  // is holding at z = 0, while the clip and grip, which stick out past it,
+  // dip below. Measure the particles instead and let everything else fit
+  // inside that.
+  // The real pencil is not a uniform cylinder: its rubber grip is the
+  // fattest part (measured on these bodies, 5.6 mm against a 3.9 mm
+  // barrel), and the grip is therefore what rests on the table. Read the
+  // radius profile off the particles so the drawn grip touches exactly
+  // when the physics says the body does.
+  const cx = cap.axis;
+  let r = cap.radius, half = cap.half, gripR = r, gripAt = 0;
+  if (body.offsets && body.offsets.length) {
+    const BINS = 24;
+    let maxAlong = 0;
+    const along = [], radial = [];
+    for (const o of body.offsets) {
+      const a = o[0] * cx[0] + o[1] * cx[1] + o[2] * cx[2];
+      along.push(a);
+      radial.push(Math.hypot(o[0] - a * cx[0], o[1] - a * cx[1], o[2] - a * cx[2]));
+      if (Math.abs(a) > maxAlong) maxAlong = Math.abs(a);
+    }
+    const bin = new Float64Array(BINS);
+    along.forEach((a, i) => {
+      const k = Math.min(BINS - 1, Math.max(0, Math.floor((a + maxAlong) / (2 * maxAlong) * BINS)));
+      bin[k] = Math.max(bin[k], radial[i]);
+    });
+    // barrel: the typical radius over the middle of the body, ignoring the
+    // tapered ends; grip: the fattest band, and where it sits
+    const mid = [...bin].slice(4, BINS - 4).sort((a, b) => a - b);
+    r = mid.length ? mid[Math.floor(mid.length / 2)] : r;
+    gripR = Math.max(...bin);
+    const kMax = [...bin].indexOf(gripR);
+    gripAt = (kMax + 0.5) / BINS * 2 * maxAlong - maxAlong;
+    half = Math.max(maxAlong - r, 0.01);
+  }
+  const L = 2 * half + 2 * r;                       // full physical length
   const sampler = makeSampler(body.render_verts, body.render_colors);
 
   // which end is the tip: the darker end (metal cone + dark grip vs the
@@ -89,9 +127,11 @@ export function buildPencil(body) {
   colorize(dome, sampler, M);
   g.add(new THREE.Mesh(dome, mat()));
 
-  // rubber grip: a slightly proud band, the photo colour darkened
-  const grip = new THREE.CylinderGeometry(r + GRIP_BULGE, r + GRIP_BULGE, GRIP_LEN, 28, 1, false);
-  grip.translate(0, coneBase - GRIP_FROM_TIP - GRIP_LEN / 2, 0);
+  // rubber grip: the fattest band of the physics body, drawn where the
+  // particles actually put it, so it is what meets the table
+  const grip = new THREE.CylinderGeometry(gripR, gripR, GRIP_LEN, 28, 1, false);
+  grip.translate(0, Math.max(eraserEnd + GRIP_LEN / 2,
+    Math.min(coneBase - GRIP_LEN / 2, gripAt * tipSign)), 0);
   colorize(grip, sampler, M, 0.6);
   g.add(new THREE.Mesh(grip, mat({ roughness: 0.9 })));
 
@@ -109,7 +149,9 @@ export function buildPencil(body) {
 
   // clip at the eraser end, lying along the barrel
   const clip = new THREE.BoxGeometry(CLIP_W, CLIP_LEN, CLIP_T);
-  clip.translate(0, eraserEnd + CLIP_FROM_END + CLIP_LEN / 2, r + CLIP_T / 2);
+  // seated flush: its outer face is the barrel surface, so the clip is
+  // never the part that touches the table
+  clip.translate(0, eraserEnd + CLIP_FROM_END + CLIP_LEN / 2, r - CLIP_T / 2);
   const kc = new Float32Array(clip.getAttribute("position").count * 3);
   const base = sampler([0, 0, 0]);
   for (let i = 0; i < kc.length; i += 3) { kc[i] = base[0] * 0.9 + 0.1; kc[i + 1] = base[1] * 0.9 + 0.1; kc[i + 2] = base[2] * 0.9 + 0.1; }
