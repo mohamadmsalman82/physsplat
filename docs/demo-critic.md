@@ -172,7 +172,35 @@ Also from this round: the reconstructed pencils were 10-17 mm thick against
 an 8-9 mm real barrel and 7-11 mm training pencils. The pipeline now scales
 each pencil's cross-section to the known radius (4.5 mm outer) and its
 density to the real 6.2 g; that puts the photo scenes back inside the
-training distribution for radius, mass and inertia.
+training distribution for radius, mass and inertia. The tester's visual
+complaint ("smooth pills, nothing identifies them as pencils") is
+answered with a procedural pencil built inside each physical capsule:
+barrel and eraser dome in the photo's colours, a rubber grip band, a
+metal cone tip with a lead, and a clip.
+
+Two things the diagnostics found on the fixed build before the next
+tester could:
+
+- **A pencil at rest reared up on its own.** The elevation track of the
+  top pencil in IMG_8596 went 0, 6, 69, 45, 83, 79, 26, 18 degrees in the
+  first seconds, held 17 degrees for five seconds, rose again to 89, stood
+  on its end for two seconds, and fell. The packet starts flat; the
+  network's angular residual on the reconstructed pile injected the
+  energy, and the tip-balance detector missed it because a standing body
+  never settles. Fix: the no-free-energy rule (`docs/diagnostics.md`):
+  the residual may not raise the scene's mechanical energy by more than
+  the action's work. Detector `rearing`; `tip_balance` now uses speed, not
+  the settle verdict. Twenty seconds at rest afterwards: every elevation
+  constant, zero interventions.
+- **Reset during an in-flight GPU step stalled the loop** with a null
+  record; a generation counter now aborts that step.
+
+Probe batteries on the fixed build, IMG_8596 and IMG_8626: rest still;
+lift tracks within 3-4 mm and the released pencil falls at 1.00 g and
+lands; drop free-fall ratio 1.00; pulling the load-bearing pencil drops
+what it carried; no unbalanced or tilted rest poses; the remaining
+anomalies are single-step penetrations of 2-3 mm and sub-millimetre
+jitter for a few steps after landings.
 
 ## Round 4
 

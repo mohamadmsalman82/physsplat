@@ -99,8 +99,68 @@ export class PhysSim {
         settled: new Uint8Array(B),        // 1 if settle held the body still
         freeFlight: new Uint8Array(B),     // 1 if the model residual was zeroed
         pivot: new Uint8Array(B),          // 1 if the pivot rule drove the body
+        energyScale: 1,                    // <1 if the residual was scaled for energy
+        energyGain_uJ: 0,                  // what the unscaled residual would have added
       },
     };
+  }
+
+  /** Total mechanical energy of a state (J): kinetic + gravitational. */
+  #energy(st) {
+    const g = this.rt.gravity;
+    let E = 0;
+    for (let b = 0; b < this.B; b++) {
+      const v = st.linvel[b], w = st.angvel[b], m = this.mass[b], I = this.inertia[b];
+      const R = quatToMatrix(st.quat[b]);
+      const wb = [R[0] * w[0] + R[3] * w[1] + R[6] * w[2],
+        R[1] * w[0] + R[4] * w[1] + R[7] * w[2], R[2] * w[0] + R[5] * w[1] + R[8] * w[2]];
+      E += 0.5 * m * (v[0] ** 2 + v[1] ** 2 + v[2] ** 2) +
+        0.5 * (I[0] * wb[0] ** 2 + I[1] * wb[1] ** 2 + I[2] * wb[2] ** 2) + m * g * st.pos[b][2];
+    }
+    return E;
+  }
+
+  /**
+   * No free energy. Contact forces from static things cannot add
+   * mechanical energy to a pile; only an applied force can, and only as
+   * much work as it does. The network's residual on a reconstructed pile
+   * did not respect that: a pencil at rest reared up to 89 degrees on its
+   * own, twice, and balanced on its end (diagnostics track, IMG_8596).
+   * Trial-integrate the step; if the energy rises by more than the
+   * action's work (plus a small allowance for pushing out of overlaps),
+   * scale the residual down until it does not.
+   */
+  #energyRule(residual, ext, actBody, actPoint, actForce) {
+    const rt = this.rt, st = this.state;
+    const E0 = this.#energy(st);
+    let W = 0;
+    if (actBody >= 0) {
+      const v = st.linvel[actBody], w = st.angvel[actBody], p = st.pos[actBody];
+      const r = [actPoint[0] - p[0], actPoint[1] - p[1], actPoint[2] - p[2]];
+      const vp = [v[0] + w[1] * r[2] - w[2] * r[1], v[1] + w[2] * r[0] - w[0] * r[2],
+        v[2] + w[0] * r[1] - w[1] * r[0]];
+      W = (actForce[0] * vp[0] + actForce[1] * vp[1] + actForce[2] * vp[2]) * rt.dt;
+    }
+    const allow = Math.max(W, 0) + 5e-7;          // J per step; 5e-7 ~ 0.5 mm/s of lift
+    const trial = (scale) => {
+      const copy = { pos: st.pos.map((x) => [...x]), quat: st.quat.map((x) => [...x]),
+        linvel: st.linvel.map((x) => [...x]), angvel: st.angvel.map((x) => [...x]) };
+      const res = scale === 1 ? residual : residual.map((x) => x * scale);
+      stepBodies(copy, res, ext, rt.dt, rt.gravity);
+      return this.#energy(copy) - E0;
+    };
+    const gain = trial(1);
+    this.last.guard.energyGain_uJ = (gain - Math.max(W, 0)) * 1e6;
+    if (gain <= allow) return;
+    // bisection on the residual scale (5 rounds is 3% resolution)
+    let lo = 0, hi = 1;
+    if (trial(0) > allow) { lo = 0; hi = 0; }   // gravity alone exceeds it: drop the residual
+    for (let it = 0; it < 5 && hi > lo; it++) {
+      const mid = (lo + hi) / 2;
+      if (trial(mid) > allow) hi = mid; else lo = mid;
+    }
+    for (let i = 0; i < residual.length; i++) residual[i] *= lo;
+    this.last.guard.energyScale = lo;
   }
 
   /**
@@ -599,6 +659,7 @@ export class PhysSim {
     if (this.groundGuard) {
       this.#freeFlight(parts, senders, receivers);
       pivots = this.#pivotRule(parts, ext, actBody);
+      this.#energyRule(residual, ext, actBody, actPoint ?? [0, 0, 0], actForce ?? [0, 0, 0]);
     }
     const prePos = this.state.pos.map((p) => [...p]);
     const preQuat = this.state.quat.map((q) => [...q]);

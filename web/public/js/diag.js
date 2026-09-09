@@ -149,6 +149,11 @@ export class Diagnostics {
         if (!this.restStart[i]) this.restStart[i] = { pos: [...p], axis: [...cap.a], step };
       } else this.restStart[i] = null;
       const rs = this.restStart[i];
+      // slow by speed alone (a standing pencil never settles, so the
+      // tip-balance detector must not depend on the settle verdict)
+      this.slowSteps ??= [];
+      const slowNow = speed < REST_V && angSpeed < REST_W;
+      this.slowSteps[i] = slowNow ? (this.slowSteps[i] ?? 0) + 1 : 0;
       const minGap = Math.min(lowest, ...mine.map((c) => c.gap));
       const b = {
         id: i, mass: m,
@@ -166,6 +171,7 @@ export class Diagnostics {
         support: { n: an.n, floor: sp.floor, capsule: sp.capsule, balanced: an.balanced,
           dist_mm: an.dist === Infinity ? null : an.dist * 1e3, spread_mm: an.spread * 1e3 },
         resting, restingSteps: rs ? step - rs.step : 0,
+        slowSteps: this.slowSteps[i],
         driftSinceRest_mm: rs ? hyp(sub(p, rs.pos)) * 1e3 : 0,
         rotSinceRest_deg: rs ? axisAngleDeg(cap.a, rs.axis) : 0,
         KE, PE: m * G * p[2],
@@ -183,6 +189,7 @@ export class Diagnostics {
           settled: !!last.guard.settled[i],
           freeFlight: !!last.guard.freeFlight[i],
           pivot: !!last.guard.pivot?.[i],
+          energyScale: last.guard.energyScale ?? 1,
         } : null,
       };
       bodies.push(b);
@@ -203,6 +210,8 @@ export class Diagnostics {
         maxSpeed: Math.max(0, ...bodies.map((b) => b.speed)),
         resting: bodies.filter((b) => b.resting).length,
         guardPairs: last ? last.guard.pairs.length : 0,
+        energyScale: last ? (last.guard.energyScale ?? 1) : 1,
+        energyGain_uJ: last ? (last.guard.energyGain_uJ ?? 0) : 0,
       },
       timing: sim.timing ? { ...sim.timing } : null,
       anomalies: [],
@@ -241,9 +250,12 @@ export class Diagnostics {
       if (b.unsupported && b.lowest > 6e-3 && b.restingSteps >= 20 && b.stepsSinceAction > 20)
         add("floating", id, "error", b.lowest * 1e3,
           `body ${id} rests ${(b.lowest * 1e3).toFixed(1)} mm above the floor with no contact`, { body: id });
-      if (b.elevation_deg > 60 && b.lowest < 3e-3 && b.restingSteps >= 30)
+      if (b.elevation_deg > 60 && b.lowest < 3e-3 && b.slowSteps >= 30)
         add("tip_balance", id, "error", b.elevation_deg,
-          `body ${id} balanced on its end at ${b.elevation_deg.toFixed(0)} deg for ${b.restingSteps} steps`, { body: id });
+          `body ${id} balanced on its end at ${b.elevation_deg.toFixed(0)} deg for ${b.slowSteps} steps`, { body: id });
+      if (b.elevation_deg > 45 && b.stepsSinceAction > 30 && b.rotSinceRest_deg === 0 && b.angSpeed > 0.5 && b.lowest < 3e-3)
+        add("rearing", id, "error", b.elevation_deg,
+          `body ${id} is rotating upward on its own (${b.elevation_deg.toFixed(0)} deg, ${b.angSpeed.toFixed(1)} rad/s) with no action`, { body: id });
       else if (b.elevation_deg > 4 && b.lowest < 3e-3 && !b.contacts.length && b.restingSteps >= 30)
         add("tilt_hold", id, "error", b.elevation_deg,
           `body ${id} rests tilted ${b.elevation_deg.toFixed(1)} deg with one end on the floor and nothing under the other`, { body: id });
@@ -334,7 +346,8 @@ export class Diagnostics {
       pairs: f.pairs.map((p) => ({ ...p, gap_mm: r3(p.gap_mm, 1) })),
       totals: { KE_uJ: r3(f.totals.KE * 1e6, 2), maxPenetration_mm: r3(f.totals.maxPenetration_mm, 1),
         maxGroundPen_mm: r3(f.totals.maxGroundPen_mm, 1), maxSpeed: r3(f.totals.maxSpeed),
-        resting: f.totals.resting, guardPairs: f.totals.guardPairs },
+        resting: f.totals.resting, guardPairs: f.totals.guardPairs,
+        energyScale: r3(f.totals.energyScale, 2), energyGain_uJ: r3(f.totals.energyGain_uJ, 2) },
       timing_ms: f.timing ? { features: r3(f.timing.features_ms, 1), graph: r3(f.timing.graph_ms, 1),
         net: r3(f.timing.net_ms, 1), N: f.timing.N, E: f.timing.E, backend: f.timing.backend } : null,
       anomalies: this.check(),
@@ -593,7 +606,11 @@ export class Probes {
       maxHeight = Math.max(maxHeight, b.height); minLowest = Math.min(minLowest, b.lowest);
       const touching = b.groundContact || b.contacts.length > 0;
       if (contactOnset === null) {
-        if (free) freeVz.push(b.linvel[2]);
+        // a step is free fall only if nothing touched: the guard cancels the
+        // approach velocity in the step the body arrives, which would drag
+        // the fitted acceleration to zero
+        const guarded = b.guard && (b.guard.ground_mm > 0 || b.guard.capsule_mm > 0);
+        if (free && !touching && !guarded) freeVz.push(b.linvel[2]);
         else if (k > 1) contactOnset = k;
       }
       if (firstContact === null) {

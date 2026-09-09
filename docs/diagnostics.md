@@ -48,6 +48,7 @@ when it stops; both are logged as events with duration and peak.
 | `penetration:<i>-<j>` | capsule overlap deeper than 2 mm (error above 5 mm) |
 | `jitter:<b>` | vertical velocity changed sign more than 8 times in 30 steps at amplitudes above 15 mm/s (a visible tremble) |
 | `unbalanced_rest:<b>` | held still for 30 steps with its centre of mass outside its support polygon |
+| `rearing:<b>` | rotating upward past 45 degrees with one end on the floor, faster than 0.5 rad/s, with no action in 30 steps |
 | `spontaneous_motion:scene` | kinetic energy rising for 10 steps with no action for 90 steps |
 
 Contacts use a 3 mm gap tolerance between capsule surfaces because the
@@ -103,6 +104,7 @@ recorded per step in `guard`:
 - **pivot**: a body whose centre of mass is not over its support (more than 7 mm outside the support polygon, with hysteresis back to 4 mm) is integrated as a pendulum about the hinge, the nearest point of the support polygon's boundary (an edge between two contacts, or a lone contact): gravity's torque over the inertia about the hinge, model residual dropped, centre of mass moving with omega x r; velocities are cut to 0.2 when the swing lands on a new support. Without this a pencil that landed on its end was held 9-14 degrees up with the other end in the air, and pencils balanced on their tips (the round-1 tester's complaint).
 - **ground / capsule guards**: residual overlap with the floor or another capsule is removed and the approaching velocity cancelled.
 - **settle**: a supported body that has been slow (under 3 cm/s, 0.6 rad/s) for 15 steps is held exactly still (pose restored) until something acts on it; slow motion on a support is damped by half each step first, because the model's contact response rings for a second after a landing. Zeroing velocity alone left a slow sideways creep driven by the guards. At the moment a body settles, a gap of up to 6 mm to the floor or to the nearest capsule is closed once, because the model's contact response equilibrates 2-5 mm above whatever it landed on.
+- **no free energy**: contact with static things cannot add mechanical energy to a pile; only an applied force can, and only as much work as it does. Each step is trial-integrated, and if the learned residual would raise the scene's kinetic plus gravitational energy by more than the action's work (plus 0.5 uJ, about 0.5 mm/s of lift, for pushing out of overlaps), the residual is scaled down until it does not (`guard.energyScale`, `totals.energyGain_uJ`). Without this the top pencil of IMG_8596 reared up to 89 degrees on its own, twice in ten seconds, and balanced on its end.
 - **caps**: 3 m/s and 60 rad/s; nothing in a pencil pile moves faster, and a runaway must not leave the table.
 - **at load**: overlaps left by the single-view reconstruction are resolved by lifting the upper body of each overlapping pair straight up (`load_correction.lift_mm` in the scene event), never sideways, and the first 24 physics steps run before anything is drawn, so the pile appears already settled. Grabs attach on the pencil's axis, whatever the cursor hit, so the spring cannot torque the pencil about its own axis.
 

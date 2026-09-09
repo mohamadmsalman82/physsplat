@@ -6,6 +6,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { PhysSim } from "./sim.js";
 import { Diagnostics, Probes } from "./diag.js";
+import { buildPencil } from "./pencil_mesh.js";
 
 const $ = (id) => document.getElementById(id);
 const err = (m) => { $("err").textContent = String(m); console.error(m); };
@@ -117,7 +118,11 @@ async function loadScene(name) {
     geo.setAttribute("color", new THREE.Float32BufferAttribute(
       b.render_colors.flat().map((c) => c / 255), 3));
     let obj;
-    if (b.render_faces && b.render_faces.length && Q.get("points") !== "1") {
+    if (b.capsule && Q.get("points") !== "1" && Q.get("mesh") !== "capsule") {
+      // procedural pencil inside the physical capsule, coloured from the
+      // reconstruction (js/pencil_mesh.js)
+      obj = buildPencil(b);
+    } else if (b.render_faces && b.render_faces.length && Q.get("points") !== "1") {
       // lit surface from the reconstruction's own triangles
       geo.setIndex(b.render_faces.flat());
       geo.computeVertexNormals();
@@ -153,7 +158,7 @@ async function loadScene(name) {
   preroll = PREROLL_STEPS;
   loading = false;
 }
-const PREROLL_STEPS = 24;
+const PREROLL_STEPS = 45;   // 0.75 s: a lifted-at-load pencil drops and settles within this
 let preroll = 0;
 
 /**
