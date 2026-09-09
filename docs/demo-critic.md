@@ -390,6 +390,17 @@ fix.
 Interaction battery afterwards: IMG_8596, IMG_8504 and IMG_8513 pass in
 full; IMG_8626 fails only support removal, down from three failures.
 
+## Deferred: fine-tuning under the kept rules
+
+`scripts/improve.py --rules` trains the model against the residual the
+runtime actually allows (free flight plus the angular fade) and scores it
+the same way, so the loop stays comparable within itself. It is written,
+tested and ready, and it has not been run to completion: three attempts
+were killed by the OS for memory. This machine has 24 GB with about 4 GB
+free, 8 GB compressed and swap 91% full, so a rollout fine-tune's few
+gigabytes cannot be had while the desktop is loaded. It needs either a
+quieter machine or some applications closed, not a code change.
+
 ## Round 6
 
 Pending.
