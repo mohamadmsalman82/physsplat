@@ -85,8 +85,16 @@ let sim = await fresh();
 const segs0 = packet.bodies.map((x, i) => capsuleWorld(sim.state.pos[i], sim.state.quat[i], x.capsule));
 const touches = packet.bodies.map((_, i) => packet.bodies
   .filter((_, j) => j !== i && -capsuleClosest(segs0[i], segs0[j]).pen < 6e-3).length);
-const carries = packet.bodies.map((_, i) => packet.bodies.some((_, j) =>
-  j !== i && -capsuleClosest(segs0[i], segs0[j]).pen < 6e-3 && sim.state.pos[j][2] > sim.state.pos[i][2]));
+// "Carries" means something rests ON this body, which is a fact about the
+// contact point, not about centres of mass. Comparing centre heights misses
+// a pencil that crosses over one end of this one while its own middle hangs
+// lower, and that is exactly the pencil that stops a lift: capsuleClosest
+// returns n pointing from j to i, so n[2] < 0 puts j above i where they meet.
+const carries = packet.bodies.map((_, i) => packet.bodies.some((_, j) => {
+  if (j === i) return false;
+  const c = capsuleClosest(segs0[i], segs0[j]);
+  return -c.pen < 6e-3 && (c.n[2] < -0.2 || sim.state.pos[j][2] > sim.state.pos[i][2]);
+}));
 const pool = packet.bodies.map((_, i) => i).filter((i) => !carries[i]);
 const top = (pool.length ? pool : packet.bodies.map((_, i) => i))
   .reduce((a, b) => (touches[b] < touches[a] ||
