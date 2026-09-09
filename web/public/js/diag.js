@@ -649,11 +649,11 @@ export class Probes {
   }
 
   /** Flick: an impulse of `dv` m/s along `dir` at the grab point. */
-  async poke(body, { dir = [1, 0, 0], dv = 0.3, at = "center", settle = 120, reset = true } = {}) {
+  async poke(body, { dir = [1, 0, 0], dv = 0.3, at = "center", settle = 120, reset = true, maxDv = null } = {}) {
     await this.#prepare(reset);
     const rt = this.sim.rt, m = this.sim.mass[body];
     const n = hyp(dir); const u = dir.map((x) => x / n);
-    const cap = rt.poke.delta_v[1];
+    const cap = maxDv ?? rt.poke.delta_v[1];     // maxDv: probe beyond the trained range
     const v = Math.min(dv, cap);
     const point = this.#world(body, this.#local(body, at));
     const force = u.map((x) => x * v * m / (rt.poke.steps * rt.dt));
@@ -672,6 +672,33 @@ export class Probes {
       probe: "poke", body, dir: u, dv_requested: dv, dv_applied: v,
       peak_speed: r3(peak), peak_angSpeed: r3(peakAng, 2),
       stop_after_s: stopAt ? r3(stopAt * rt.dt, 2) : null,
+      displacement_mm: r3(hyp(sub(fin.bodies[body].pos, before.bodies[body].pos)) * 1e3, 1),
+      rotation_deg: r3(axisAngleDeg(fin.bodies[body].axis, before.bodies[body].axis), 1),
+      others: s.bodies.filter((b) => b.id !== body).map((b) => ({ id: b.id, displacement_mm: b.displacement_mm })),
+      maxPenetration_mm: r3(Math.max(...s.bodies.map((b) => b.maxPenetration_mm)), 1),
+      anomalyStarts: s.anomalyStarts, episodes: s.episodes, active: s.active,
+    };
+  }
+
+  /** Flick: the grab point is pushed along `dir` at `speed` for `distance`
+   * and let go, the same path the mouse flick uses. */
+  async flick(body, { dir = [1, 0, 0], speed = 0.4, distance = 0.05, at = "center", settle = 120, reset = true } = {}) {
+    await this.#prepare(reset);
+    const before = this.diag.frame(0);
+    this.dbg.flick(body, this.#local(body, at), dir, speed, distance);
+    let peak = 0, peakAng = 0, stopAt = null, released = null;
+    for (let k = 1; k <= settle; k++) {
+      const f = await this.diag.waitSteps(1);
+      const b = f.bodies[body];
+      peak = Math.max(peak, b.speed); peakAng = Math.max(peakAng, b.angSpeed);
+      if (released === null && !f.action) released = k;
+      if (stopAt === null && released !== null && k > released + 3 && b.resting) stopAt = k;
+    }
+    const fin = this.diag.frame(0), s = this.diag.summary(settle);
+    return {
+      probe: "flick", body, dir, speed, distance, released_after_s: released ? r3(released * this.sim.rt.dt, 2) : null,
+      peak_speed: r3(peak), peak_angSpeed: r3(peakAng, 2),
+      stop_after_s: stopAt ? r3(stopAt * this.sim.rt.dt, 2) : null,
       displacement_mm: r3(hyp(sub(fin.bodies[body].pos, before.bodies[body].pos)) * 1e3, 1),
       rotation_deg: r3(axisAngleDeg(fin.bodies[body].axis, before.bodies[body].axis), 1),
       others: s.bodies.filter((b) => b.id !== body).map((b) => ({ id: b.id, displacement_mm: b.displacement_mm })),
@@ -735,6 +762,7 @@ export class Probes {
       ["lift", () => this.lift(top)],
       ["grab_end", () => this.grab(top, { at: "end", delta: [0.06, 0, 0] })],
       ["poke", () => this.poke(top)],
+      ["flick", () => this.flick(top)],
       ["pullBottom", () => this.pullBottom()],
       ["drop", () => this.drop(top)],
     ];

@@ -73,7 +73,8 @@ are reproducible. Grab points are `"center"`, `"end"`, `"tip"`, a number in
 await physsplat.probe.rest({steps: 180})                 // does anything move untouched?
 await physsplat.probe.lift(2, {height: 0.05})            // grab, raise 5 cm, hold, release
 await physsplat.probe.grab(2, {at: "end", delta: [0.06, 0, 0]})   // off-center drag
-await physsplat.probe.poke(2, {dir: [1, 0, 0], dv: 0.2}) // flick
+await physsplat.probe.poke(2, {dir: [1, 0, 0], dv: 0.3}) // trained impulse poke
+await physsplat.probe.flick(2, {dir: [1, 0, 0], speed: 0.4, distance: 0.05}) // what a mouse flick does
 await physsplat.probe.pullBottom()                       // pull the most load-bearing pencil out
 await physsplat.probe.drop(2, {height: 0.05})            // teleport up, watch it fall
 await physsplat.probe.all()                              // the whole battery, ~1 min
@@ -91,7 +92,8 @@ What the reports contain:
 
 - **rest**: per-body displacement, rotation, guard totals, resting fraction, anomalies, and a verdict (`still` or which bodies moved).
 - **grab / lift / pullBottom**: tracking error between the cursor target and the grab point (mean, max, final, requested vs achieved displacement), the body's pose at release, how far every other body moved, and an `after_release` block: fitted free-fall acceleration and its ratio to g, contact onset, impact speed against the analytic value, bounces, lowest point reached, time to rest, final contacts, plus a 40-step series of height, vertical velocity, model residual and guard flags. `pullBottom` adds, for each body the pulled pencil was supporting, how far it dropped and what it now rests on.
-- **poke**: peak speed and angular speed against the requested velocity change, stop time, displacement, rotation, how far neighbours moved.
+- **poke**: peak speed and angular speed against the requested velocity change, stop time, displacement, rotation, how far neighbours moved. The trained 3-step impulse barely moves a pencil on a pile (the learned friction eats it: 0.3 m/s gives 3 mm), so the mouse flick does not use it.
+- **flick**: the grab point is pushed along the gesture at the cursor's speed for a short distance and let go, the same path the mouse uses; reports when it released, peak speed, travel, rotation, stop time. A 0.3 m/s flick travels 13 mm, 0.5 m/s travels 29 mm.
 - **drop**: the `after_release` block for a body released from rest in mid-air.
 
 ## Guards and the model

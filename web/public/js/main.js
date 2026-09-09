@@ -272,23 +272,34 @@ renderer.domElement.addEventListener("pointermove", (e) => {
 const GRAB = { omega: 28, zeta: 1.0 };
 const POKE_MS = 350;    // a press shorter than this that moved is a flick
 
+/**
+ * A flick is a short push, the way a finger does it: the grab point is
+ * carried along the gesture at the cursor's speed for `distance`, then let
+ * go. The trained impulse poke (3 steps, up to 0.3 m/s) barely moves a
+ * pencil on a pile because the learned friction eats it, and the model's
+ * response to larger impulses is erratic (a 1 m/s poke spun a pencil to
+ * the 60 rad/s cap); the spring drag path is well-behaved at any speed.
+ */
+function startFlick(body, local, dir, speed, distance) {
+  const d = new THREE.Vector3(...dir);
+  if (d.length() < 1e-6) return;
+  d.normalize();
+  const spd = Math.min(Math.max(speed, 0.15), 0.6);
+  const dist = Math.min(Math.max(distance, 0.02), 0.08);
+  const from = new THREE.Vector3(...local).applyQuaternion(proxies[body].quaternion)
+    .add(proxies[body].position);
+  flick = { body, local: [...local], from, dir: d, speed: spd, dist, travelled: 0 };
+  diag?.event("flick", { body, speed: +spd.toFixed(2), distance_mm: +(dist * 1e3).toFixed(0) });
+}
+let flick = null;
+dbg.flick = (body, local, dir, speed, distance) => startFlick(body, local, dir, speed, distance);
+
 renderer.domElement.addEventListener("pointerup", () => {
   if (drag && drag.moved && performance.now() - drag.t0 < POKE_MS) {
-    const rt = sim.rt;
-    // flick strength from cursor speed: a 0.2 m/s impulse over the trained
-    // 3-step window is only a 4 m/s^2 push, under the friction a pencil on
-    // a pile resists, so an ordinary flick should reach the trained
-    // maximum (0.3 m/s)
     const held = Math.max(0.05, (performance.now() - drag.t0) / 1000);
-    const dv = drag.target.clone().sub(drag.p0).multiplyScalar(2.0 / held);
-    const cap = rt.poke.delta_v[1];
-    if (dv.length() > cap) dv.setLength(cap);
-    const m = sim.mass[drag.body];
-    pendingPoke = { body: drag.body,
-      point: worldGrabPoint(drag).toArray(),
-      force: dv.multiplyScalar(m / (rt.poke.steps * rt.dt)).toArray(),
-      left: rt.poke.steps };
-    diag?.event("poke", { body: drag.body, dv: +dv.length().toFixed(3) });
+    const delta = drag.target.clone().sub(drag.p0);
+    startFlick(drag.body, drag.local.toArray(), delta.toArray(), delta.length() / held * 1.5,
+      Math.max(0.03, delta.length() * 2));
   } else if (drag) {
     diag?.event("grab_end", { body: drag.body, held_ms: Math.round(performance.now() - drag.t0) });
   }
@@ -302,7 +313,7 @@ function resetScene() {
   if (!sim) return;
   sim.reset();
   dbg.scriptDrag = dbg.scriptPoke = null;
-  pendingPoke = null;
+  pendingPoke = null; flick = null;
   prevState = currState = null;
   diag?.reset("reset");
   syncTransforms();
@@ -365,6 +376,17 @@ async function physicsLoop() {
       const f = springForce(drag.body, wp, drag.target.toArray());
       act = [drag.body, wp, f];
       actInfo = { kind: "grab", body: drag.body, force: f, point: wp, target: drag.target.toArray() };
+    } else if (flick) {
+      // carry the grab point along the flick at its speed, then release
+      flick.travelled += flick.speed * rt.dt;
+      const target = flick.from.clone().add(flick.dir.clone().multiplyScalar(flick.travelled));
+      const wp = new THREE.Vector3(...flick.local)
+        .applyQuaternion(new THREE.Quaternion(...sim.state.quat[flick.body]))
+        .add(new THREE.Vector3(...sim.state.pos[flick.body])).toArray();
+      const f = springForce(flick.body, wp, target.toArray());
+      act = [flick.body, wp, f];
+      actInfo = { kind: "flick", body: flick.body, force: f, point: wp, target: target.toArray() };
+      if (flick.travelled >= flick.dist) flick = null;
     } else if (dbg.scriptDrag) {
       const d = dbg.scriptDrag;
       const R = sim.state.quat[d.body];
