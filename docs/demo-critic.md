@@ -337,6 +337,59 @@ touches four others, still fails three of those: the grabbed pencil cannot
 be prised out, ends at 71 degrees, and pulling the bottom one out does not
 drop what it carried. The other three scenes pass in full.
 
-## Round 5
+## Round 5 (2026-09-09)
+
+| Visuals | Physics | Interaction | Robustness | Overall |
+|---|---|---|---|---|
+| 4 | 2 | 3 | 6 | 3 |
+
+The sharpest report so far, and its root-cause section was right. Zero
+console errors, eight scene switches, bit-exact reset, no blow-ups; and
+underneath that, this:
+
+1. **A pencil walked 102 mm across the table on its own** in 77 s on
+   IMG_8626, at a steady 1.6 mm/s with no decay, `resting: false` from
+   step 0, and no anomaly raised. Its diagnosis: a body that never quite
+   reaches the settle threshold rides the guards' positional corrections,
+   which are not velocity-consistent, so every push adds a little energy
+   and the cycle never ends. It measured 68.65 mm of cumulative guard
+   correction per 10 s on that body and 0 on the four that rest.
+   The CPU regression test could not reproduce it over 40 s; the cycle
+   needs the GPU backend's slightly different numbers to stay just above
+   the threshold. Fixed by counting the steps on which the guards push a
+   body that is going nowhere and letting settle claim it after half a
+   second. Verified on the live page: 35 s, 0.0 mm drift on all five.
+2. **Nothing was touching anything at rest**: gaps of 1.8-3.0 mm between
+   bodies that the panel called contacts. The gap-closing snap only ran on
+   the step a body first settled, so anything that settled during the load
+   pre-roll kept its gap forever. It now runs every settled step. Live
+   gaps afterwards: 0.1-0.5 mm. This also fixed the IMG_8626 lift, which
+   had been failing because the pencil was not in contact with what it was
+   supposedly resting on.
+3. **The pencils looked semi-transparent.** They were: the barrel was an
+   open-ended cylinder, so front-face culling let you see straight through
+   it. Closed.
+4. **Shadows were detached streaks matching no pencil.** `normalBias` was
+   0.02, four times the pencil radius. 1.5 mm.
+5. **A stationary click could still throw a pencil.** The drag plane is
+   defined by the camera, so orbit damping coasting from an earlier
+   gesture moved the projected target with the mouse still. Travel is now
+   measured in screen pixels too.
+6. **Everything ran at 0.45x real time.** True, and not fixable by a flag:
+   a step costs 27-53 ms against the 16.7 ms budget. The HUD now states
+   the playback rate rather than letting it read as low gravity.
+7. The ground is a lit wooden table rather than a near-black grid in a
+   void.
+
+Its recommendation to put the energy limiter back is the one I did not
+take, and the reason is in the table above: it was measured against the
+model, not against a frozen scene, and it cost 14 points of composite and
+half the stability. The walking pencil had a cheaper cause and a cheaper
+fix.
+
+Interaction battery afterwards: IMG_8596, IMG_8504 and IMG_8513 pass in
+full; IMG_8626 fails only support removal, down from three failures.
+
+## Round 6
 
 Pending.

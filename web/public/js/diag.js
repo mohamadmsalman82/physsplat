@@ -144,8 +144,15 @@ export class Diagnostics {
       // still) when the guard record exists; the speed test alone counted
       // slow settling motion as rest and reported it as creep
       const resting = last ? !!last.guard.settled[i] : (speed < REST_V && angSpeed < REST_W);
-      const snapped = last && last.guard.ground[i] < 0;   // settle closed a gap on purpose
-      if (resting && !snapped) {
+      // Re-anchor on a jump, not on drift: a settled body that closes a
+      // gap moves millimetres in one step and that is deliberate, while
+      // creep is tenths of a millimetre repeated. Anchoring once and never
+      // again reported a single 2.9 mm gap-closing snap as 18 seconds of
+      // creep.
+      const prevFrame = this.count ? this.frame(0) : null;
+      const jumped = prevFrame && prevFrame.bodies[i] &&
+        hyp(sub(p, prevFrame.bodies[i].pos)) > 3e-4;
+      if (resting && !jumped) {
         if (!this.restStart[i]) this.restStart[i] = { pos: [...p], axis: [...cap.a], step };
       } else this.restStart[i] = null;
       const rs = this.restStart[i];
