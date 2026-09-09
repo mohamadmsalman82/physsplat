@@ -242,23 +242,55 @@ def build_body(cluster_verts, cluster_colors, faces=None) -> ReconBody | None:
     r_out = float(np.percentile(radial, 95))
     if r_out > 1e-4:
         body_verts[:, 1:] *= KNOWN_RADIUS / r_out
-    hull = trimesh.Trimesh(vertices=body_verts).convex_hull
-    com_b = hull.center_mass
+    # The physics body is the cylinder we know the object is, not the convex
+    # hull of the reconstruction.
+    #
+    # The hull is a bad pencil in three measurable ways, and every one of them
+    # reaches the screen, because the ground rule holds the lowest PARTICLE
+    # and the particles are sampled off this solid. Measured over the four
+    # scenes' seventeen bodies: cross-sections come back elliptical at about
+    # 1.4 to 1 for an object that is round, so a pencil resting on its narrow
+    # side sits 1 to 2 mm lower than one resting on its wide side; the ends
+    # taper over their last 10 to 15 mm where a real Matic Grip is straight to
+    # within a few millimetres of the cap, so nine bodies do not distinguish
+    # their two ends by even 0.3 mm of mean radius and there is no reliable
+    # way to tell which end is the point; and the whole surface is lumpy
+    # enough that a drawn pencil either escapes it or floats inside it.
+    #
+    # None of that is information. It is single-image reconstruction noise
+    # about an object whose shape is not in question: these are BIC Matic
+    # Grips, they are round, they are KNOWN_RADIUS across, and they are
+    # straight from end to end. The reconstruction is trusted for what it
+    # actually knows, which is where each pencil is, which way it points and
+    # how much of it was visible; the shape comes from the object.
+    #
+    # Length stays as reconstructed rather than snapping to KNOWN_LENGTH.
+    # Occluded pencils come back as short as 99 mm and growing them back to
+    # 150 would drive their ends into neighbours that the photo shows them
+    # merely touching, which is a worse error than a short pencil.
+    along = body_verts[:, 0]
+    lo_a, hi_a = float(along.min()), float(along.max())
+    # centre on the extremes, not the mean: sampling is denser in the middle
+    com_b = np.array([(lo_a + hi_a) / 2,
+                      (body_verts[:, 1].min() + body_verts[:, 1].max()) / 2,
+                      (body_verts[:, 2].min() + body_verts[:, 2].max()) / 2])
     body_verts = body_verts - com_b
-    hull.apply_translation(-com_b)
-    mass = PENCIL_DENSITY * hull.volume
-    inertia_b = hull.moment_inertia * PENCIL_DENSITY  # about COM, body frame
-    w, U = np.linalg.eigh(inertia_b)                 # re-diagonalize
-    if np.linalg.det(U) < 0:
-        U[:, 0] *= -1
-    body_verts = body_verts @ U
-    R_world = V @ U
+    solid = trimesh.creation.cylinder(
+        radius=KNOWN_RADIUS, height=max(hi_a - lo_a, 2 * KNOWN_RADIUS), sections=48)
+    # trimesh builds it along z, centred; turn z into the body's long axis
+    solid.apply_transform(trimesh.transformations.rotation_matrix(
+        np.pi / 2, [0, 1, 0]))
+    mass = PENCIL_DENSITY * solid.volume
+    # a cylinder about its own centre is already diagonal in this frame, so
+    # unlike the hull there is nothing to re-diagonalize and the body frame
+    # stays the reconstruction's principal axes
+    inertia_b = solid.moment_inertia * PENCIL_DENSITY
+    w = np.abs(np.diag(inertia_b))
+    R_world = V
     quat = Rotation.from_matrix(R_world).as_quat()
     com = com0 + V @ com_b
-    surf = trimesh.Trimesh(vertices=np.asarray(hull.vertices) @ U,
-                           faces=hull.faces, process=False)
     offsets = farthest_point_sample(
-        trimesh.sample.sample_surface(surf, 20000, seed=1)[0])
+        trimesh.sample.sample_surface(solid, 20000, seed=1)[0])
 
     # Render mesh: a clean capsule fitted to the body (axis = principal axis
     # of least inertia = body-frame x), colored per vertex from the nearest
@@ -396,6 +428,20 @@ def mesh_to_packet(mesh: trimesh.Trimesh) -> dict:
         b = build_body(verts[sel], colors[sel], idx_map[f])
         if b is not None and len(b.offsets) >= 40:
             bodies.append(b)
+
+    # Re-seat the scene on the table. Line 410 grounds the reconstruction's
+    # vertices, which was enough while the physics solid was their convex
+    # hull. It is not enough now that the solid is a cylinder fitted to each
+    # cluster: that surface reaches below the cluster's own lowest vertex, and
+    # IMG_8504 came out starting 3.2 mm under the table, which the ground rule
+    # then spent the first frames shoving back up. Ground on the particles the
+    # physics actually holds, after the bodies exist.
+    if bodies:
+        drop = min(
+            float((Rotation.from_quat(b.quat).apply(b.offsets)[:, 2] + b.pos[2]).min())
+            for b in bodies)
+        for b in bodies:
+            b.pos[2] -= drop
 
     H = C.HISTORY
     B = len(bodies)
