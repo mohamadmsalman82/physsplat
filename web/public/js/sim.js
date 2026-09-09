@@ -493,7 +493,13 @@ export class PhysSim {
     }
   }
 
-  /** Deepest capsule overlap in the scene right now (m). */
+  /**
+   * Deepest unresolved penetration in the scene right now (m), counting
+   * BOTH pencil against pencil and pencil against the table. Measuring
+   * only the first let the correction loop stop while a body was still
+   * under the table: with the per-pass lift capped, a pencil pushed down
+   * by a grab came out 1.5 mm a step and visibly sank through the floor.
+   */
   #worstOverlap() {
     const bs = this.packet.bodies;
     if (!bs.length || !bs[0].capsule) return 0;
@@ -501,6 +507,13 @@ export class PhysSim {
     let w = 0;
     for (let i = 0; i < this.B; i++) for (let j = i + 1; j < this.B; j++)
       w = Math.max(w, capsuleClosest(segs[i], segs[j]).pen);
+    for (let b = 0; b < this.B; b++) {
+      const R = quatToMatrix(this.state.quat[b]);
+      let minz = Infinity;
+      for (const o of this.offsets[b])
+        minz = Math.min(minz, R[6] * o[0] + R[7] * o[1] + R[8] * o[2] + this.state.pos[b][2]);
+      w = Math.max(w, -minz);
+    }
     return w;
   }
 

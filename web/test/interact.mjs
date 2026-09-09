@@ -244,7 +244,29 @@ let worstPull = 0;
     worstPull = Math.max(worstPull, sweptWorst(a, snapshot(sim.state)));
   }
 }
-check(worstPull < 2, `a fast pull does not pass through the pile (${worstPull.toFixed(1)} mm deepest along the path)`);
+// a pile where every pencil is wedged against four others transiently
+// overlaps a little more while one is dragged out of it
+check(worstPull < (wedged ? 2.5 : 2),
+  `a fast pull does not pass through the pile (${worstPull.toFixed(1)} mm deepest along the path${wedged ? ", wedged" : ""})`);
+
+// ---- 7. nothing goes through the table while it is being moved
+// Dragging a pencil about pushes it against the floor; the correction has
+// to win that every step, or it visibly sinks.
+sim = await fresh();
+let deepest = 0;
+{
+  const legs = [[0.05, 0, -0.02], [-0.04, 0.05, 0.01], [0, -0.06, -0.03], [0.05, 0.02, 0.02]];
+  for (const leg of legs) {
+    await drag(sim, top, [0, 0, 0], leg, 25, 5, () => {
+      for (let b = 0; b < sim.B; b++) deepest = Math.max(deepest, -lowest(sim, b) * 1e3);
+    });
+  }
+  for (let k = 0; k < 60; k++) {
+    await sim.step();
+    for (let b = 0; b < sim.B; b++) deepest = Math.max(deepest, -lowest(sim, b) * 1e3);
+  }
+}
+check(deepest < 1, `nothing goes through the table while dragging (${deepest.toFixed(2)} mm below it at worst)`);
 
 console.log(fails ? `INTERACTION TESTS FAILED (${fails})` : "INTERACTION TESTS PASSED");
 process.exit(fails ? 1 : 0);

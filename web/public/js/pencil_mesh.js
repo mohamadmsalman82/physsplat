@@ -1,69 +1,104 @@
 /**
- * A pencil that looks like a pencil.
+ * A BIC Matic Grip, built to the real pencil rather than to a capsule.
  *
- * The physics body is a capsule (axis, half length, radius) fitted to the
- * reconstruction, and the packet carries a capsule mesh coloured from the
- * photo. A blind tester rated the capsules "smooth shaded pills; nothing
- * identifies them as pencils". This builds, inside the same physical
- * envelope, the parts a BIC Matic Grip has: a barrel that keeps the
- * photo's colour bands, a rubber grip band, a metal cone tip, and a clip
- * at the eraser end. Nothing here is seen by the physics.
+ * Working from a photograph of the pencil itself, the parts and their
+ * proportions over the 150 mm length are:
+ *
+ *   white eraser standing ~3 mm out of the top
+ *   a cap of barrel colour, slightly narrower than the barrel
+ *   the barrel: one solid colour, constant diameter
+ *   a grey clip, a wide flat plate lying along the upper barrel
+ *   a grey rubber grip near the lower third, a little fatter than the barrel
+ *   a short run of barrel below the grip, then a cone OF BARREL COLOUR
+ *   a dark lead sleeve and the lead itself at the very point
+ *
+ * The colour comes from the reconstruction of that pencil; everything else
+ * is the same on every Matic Grip. Two earlier versions got this wrong in
+ * ways worth recording: a metal ferrule (this pencil has none, the cone is
+ * plastic and body-coloured) and a barrel that carried the photo's colour
+ * bands, which made it look mottled rather than moulded.
+ *
+ * Every drawn surface stays inside the particle hull the physics moves, so
+ * a pencil the ground rule holds on the table is drawn touching it.
  */
 import * as THREE from "three";
 
-const TIP_LEN = 0.009;        // metal cone, m
-const GRIP_LEN = 0.028, GRIP_FROM_TIP = 0.010, GRIP_BULGE = 0.0002;
-const CLIP_LEN = 0.024, CLIP_W = 0.0026, CLIP_T = 0.0009, CLIP_FROM_END = 0.004;
+// fractions of the full length, measured off the reference photograph
+const ERASER_OUT = 0.020;      // eraser protruding past the cap
+const CAP_LEN = 0.045;
+const CLIP_FROM_TOP = 0.125, CLIP_LEN = 0.185, CLIP_W = 0.44, CLIP_T = 0.22;
+const GRIP_FROM_TIP = 0.127, GRIP_LEN = 0.133;
+const CONE_LEN = 0.055;
+const LEAD_LEN = 0.016;
+// the real pencil's grip is about 11 mm across and its barrel about 9:
+// the physics hull's fattest band is the grip, so the barrel follows from
+// it. Taking the barrel from the hull's median instead drew a grip far too
+// fat, because the reconstruction is lumpy.
+const GRIP_OVER_BARREL = 1.22;
 
-/** Nearest packet vertex colour for a body-frame point (the bands vary
- * along the axis, so nearest-by-position keeps grip / barrel / cap tones). */
-function makeSampler(verts, colors) {
-  const n = verts.length;
-  return (p) => {
-    let best = 0, bd = Infinity;
-    for (let i = 0; i < n; i++) {
-      const v = verts[i];
-      const d = (v[0] - p[0]) ** 2 + (v[1] - p[1]) ** 2 + (v[2] - p[2]) ** 2;
-      if (d < bd) { bd = d; best = i; }
-    }
-    const c = colors[best];
-    return [c[0] / 255, c[1] / 255, c[2] / 255];
-  };
-}
+// The grip rubber and clip are a dark charcoal on the real pencil. An
+// earlier mid-grey vanished against the grey-blue barrels, which is two of
+// the six pencils in this set.
+const GREY = [0.30, 0.31, 0.34];        // grip rubber
+const CLIP_GREY = [0.38, 0.39, 0.42];
+const ERASER = [0.94, 0.93, 0.88];
+const LEAD = [0.13, 0.13, 0.14];
+// how far to push the barrel away from neutral. Reconstruction colours come
+// back washed out, so a grey-blue barrel reads as plain grey without this.
+const CHROMA = 1.9;
 
-function colorize(geo, sampler, transform, tint = 1) {
-  const pos = geo.getAttribute("position");
-  const out = new Float32Array(pos.count * 3);
-  const p = new THREE.Vector3();
-  for (let i = 0; i < pos.count; i++) {
-    p.fromBufferAttribute(pos, i).applyMatrix4(transform);
-    const c = sampler([p.x, p.y, p.z]);
-    out[3 * i] = c[0] * tint; out[3 * i + 1] = c[1] * tint; out[3 * i + 2] = c[2] * tint;
+const solid = (geo, rgb) => {
+  const n = geo.getAttribute("position").count;
+  const c = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { c[3 * i] = rgb[0]; c[3 * i + 1] = rgb[1]; c[3 * i + 2] = rgb[2]; }
+  geo.setAttribute("color", new THREE.BufferAttribute(c, 3));
+  return geo;
+};
+
+/**
+ * The barrel colour: the most saturated colour in the reconstruction,
+ * which is the moulded plastic. Averaging everything would blend in the
+ * grey grip and the shaded side and come out muddy.
+ */
+function barrelColour(colors) {
+  let best = null, bestScore = -1;
+  const buckets = new Map();
+  for (const c of colors) {
+    const key = `${c[0] >> 5},${c[1] >> 5},${c[2] >> 5}`;
+    const e = buckets.get(key) ?? { n: 0, r: 0, g: 0, b: 0 };
+    e.n++; e.r += c[0]; e.g += c[1]; e.b += c[2];
+    buckets.set(key, e);
   }
-  geo.setAttribute("color", new THREE.BufferAttribute(out, 3));
+  for (const e of buckets.values()) {
+    const r = e.r / e.n, g = e.g / e.n, b = e.b / e.n;
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    const sat = mx > 1 ? (mx - mn) / mx : 0;
+    // popularity weighted by how coloured it is, so the barrel wins over
+    // the grey grip and over dark shadow
+    const score = e.n * (0.25 + sat) * (mx > 40 ? 1 : 0.2);
+    if (score > bestScore) { bestScore = score; best = [r, g, b]; }
+  }
+  if (!best) return [0.7, 0.7, 0.72];
+  // lift it a little: reconstruction colours come back darker than the object
+  const lit = best.map((x) => Math.min(1, (x / 255) * 1.25 + 0.06));
+  // and push it away from grey about its own luminance, so a barrel that is
+  // genuinely close to neutral still shows which way it leans
+  const lum = 0.299 * lit[0] + 0.587 * lit[1] + 0.114 * lit[2];
+  return lit.map((x) => Math.min(1, Math.max(0, lum + (x - lum) * CHROMA)));
 }
 
 /**
- * body: a packet body ({capsule:{axis,half,radius}, render_verts,
- * render_colors}). Returns a THREE.Group in the body frame.
+ * body: a packet body ({capsule, offsets, render_colors}). Returns a
+ * THREE.Group whose child holds the parts in the body frame.
  */
 export function buildPencil(body) {
   const cap = body.capsule;
   const axis = new THREE.Vector3(...cap.axis).normalize();
-  // The drawn pencil must be the same size as the body the physics moves,
-  // or it will hover above the table or sink into it while the numbers say
-  // it is exactly in contact. `capsule.radius` is the MEDIAN radial
-  // distance of the physics particles, so a barrel drawn at that radius
-  // floats about half a millimetre above the particle that the ground rule
-  // is holding at z = 0, while the clip and grip, which stick out past it,
-  // dip below. Measure the particles instead and let everything else fit
-  // inside that.
-  // The real pencil is not a uniform cylinder: its rubber grip is the
-  // fattest part (measured on these bodies, 5.6 mm against a 3.9 mm
-  // barrel), and the grip is therefore what rests on the table. Read the
-  // radius profile off the particles so the drawn grip touches exactly
-  // when the physics says the body does.
   const cx = cap.axis;
+
+  // Size from the physics particles, not from the capsule: `capsule.radius`
+  // is their MEDIAN distance from the axis, so a barrel drawn at it floats
+  // above the particle the ground rule is holding at the table.
   let r = cap.radius, half = cap.half, gripR = r, gripAt = 0;
   if (body.offsets && body.offsets.length) {
     const BINS = 24;
@@ -80,89 +115,95 @@ export function buildPencil(body) {
       const k = Math.min(BINS - 1, Math.max(0, Math.floor((a + maxAlong) / (2 * maxAlong) * BINS)));
       bin[k] = Math.max(bin[k], radial[i]);
     });
-    // barrel: the typical radius over the middle of the body, ignoring the
-    // tapered ends; grip: the fattest band, and where it sits
-    const mid = [...bin].slice(4, BINS - 4).sort((a, b) => a - b);
-    r = mid.length ? mid[Math.floor(mid.length / 2)] : r;
     gripR = Math.max(...bin);
-    const kMax = [...bin].indexOf(gripR);
-    gripAt = (kMax + 0.5) / BINS * 2 * maxAlong - maxAlong;
+    r = gripR / GRIP_OVER_BARREL;
+    gripAt = ([...bin].indexOf(gripR) + 0.5) / BINS * 2 * maxAlong - maxAlong;
     half = Math.max(maxAlong - r, 0.01);
   }
-  const L = 2 * half + 2 * r;                       // full physical length
-  const sampler = makeSampler(body.render_verts, body.render_colors);
+  const L = 2 * half + 2 * r;
+  const colour = barrelColour(body.render_colors);
 
-  // which end is the tip: the darker end (metal cone + dark grip vs the
-  // coloured eraser cap). A wrong guess still looks like a pencil.
-  let dark = 0, bright = 0, nd = 0, nb = 0;
-  body.render_verts.forEach((v, i) => {
-    const c = body.render_colors[i], lum = c[0] + c[1] + c[2];
-    const along = v[0] * axis.x + v[1] * axis.y + v[2] * axis.z;
-    if (along > 0) { bright += lum; nb++; } else { dark += lum; nd++; }
-  });
-  const tipSign = (nb && nd && bright / nb < dark / nd) ? 1 : -1;
+  // Which end is the point: the grip sits nearer it, so whichever end the
+  // fattest band leans towards is the business end.
+  const tipSign = gripAt >= 0 ? 1 : -1;
 
   const g = new THREE.Group();
-  // local frame: pencil along +y (three.js cylinders are y-aligned), tip at +y
   const frame = new THREE.Quaternion().setFromUnitVectors(
     new THREE.Vector3(0, 1, 0), axis.clone().multiplyScalar(tipSign));
-  const M = new THREE.Matrix4().makeRotationFromQuaternion(frame);
   const mat = (extra = {}) => new THREE.MeshStandardMaterial({
-    vertexColors: true, roughness: 0.55, metalness: 0.05, ...extra });
+    vertexColors: true, roughness: 0.42, metalness: 0.0, ...extra });
+  const add = (geo, m) => g.add(new THREE.Mesh(geo, m));
 
-  // barrel: cylinder from the eraser hemisphere to the cone base
-  const eraserEnd = -L / 2 + r, coneBase = L / 2 - TIP_LEN;
-  const barrelLen = coneBase - eraserEnd;
-  // closed, not open-ended: with front-face culling an open tube lets you
-  // see straight through the barrel to whatever is behind it, which a
-  // blind tester read as "the pencils are semi-transparent"
-  const barrel = new THREE.CylinderGeometry(r, r, barrelLen, 28, 1, false);
-  barrel.translate(0, eraserEnd + barrelLen / 2, 0);
-  colorize(barrel, sampler, M);
-  g.add(new THREE.Mesh(barrel, mat()));
+  // y runs from the eraser end (-L/2) to the point (+L/2)
+  const top = -L / 2, tip = L / 2;
+  const capLen = CAP_LEN * L, coneLen = CONE_LEN * L, leadLen = LEAD_LEN * L;
+  const gripLen = GRIP_LEN * L;
+  const gripEnd = tip - GRIP_FROM_TIP * L;          // grip's lower edge
+  const gripStart = gripEnd - gripLen;
+  const coneBase = tip - coneLen - leadLen;
 
-  // eraser-end hemisphere (photo colour)
-  const dome = new THREE.SphereGeometry(r, 24, 12, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
-  dome.translate(0, eraserEnd, 0);
-  colorize(dome, sampler, M);
-  g.add(new THREE.Mesh(dome, mat()));
+  // barrel: cap edge to the base of the cone, one solid colour
+  const barrelTop = top + capLen;
+  const barrel = new THREE.CylinderGeometry(r, r, coneBase - barrelTop, 32, 1, false);
+  barrel.translate(0, (barrelTop + coneBase) / 2, 0);
+  add(solid(barrel, colour), mat());
 
-  // rubber grip: the fattest band of the physics body, drawn where the
-  // particles actually put it, so it is what meets the table
-  const grip = new THREE.CylinderGeometry(gripR, gripR, GRIP_LEN, 28, 1, false);
-  grip.translate(0, Math.max(eraserEnd + GRIP_LEN / 2,
-    Math.min(coneBase - GRIP_LEN / 2, gripAt * tipSign)), 0);
-  colorize(grip, sampler, M, 0.6);
-  g.add(new THREE.Mesh(grip, mat({ roughness: 0.9 })));
+  // cap: a slightly narrower collar the eraser sits in
+  const capGeo = new THREE.CylinderGeometry(r * 0.86, r * 0.94, capLen, 28, 1, false);
+  capGeo.translate(0, top + capLen / 2, 0);
+  add(solid(capGeo, colour), mat());
 
-  // metal cone tip with a dark lead point
-  const cone = new THREE.CylinderGeometry(0.0007, r * 0.95, TIP_LEN, 24, 1, false);
-  cone.translate(0, coneBase + TIP_LEN / 2, 0);
-  const cc = new Float32Array(cone.getAttribute("position").count * 3).fill(0.8);
-  cone.setAttribute("color", new THREE.BufferAttribute(cc, 3));
-  g.add(new THREE.Mesh(cone, mat({ roughness: 0.35, metalness: 0.7 })));
-  const lead = new THREE.CylinderGeometry(0.0004, 0.0004, 0.0015, 8);
-  lead.translate(0, L / 2 + 0.0005, 0);
-  const lc = new Float32Array(lead.getAttribute("position").count * 3).fill(0.12);
-  lead.setAttribute("color", new THREE.BufferAttribute(lc, 3));
-  g.add(new THREE.Mesh(lead, mat({ roughness: 0.6 })));
+  // eraser: white, standing out of the cap
+  const eraLen = ERASER_OUT * L + capLen * 0.5;
+  const era = new THREE.CylinderGeometry(r * 0.62, r * 0.62, eraLen, 20, 1, false);
+  era.translate(0, top - ERASER_OUT * L + eraLen / 2, 0);
+  add(solid(era, ERASER), mat({ roughness: 0.85 }));
 
-  // clip at the eraser end, lying along the barrel
-  const clip = new THREE.BoxGeometry(CLIP_W, CLIP_LEN, CLIP_T);
-  // seated flush: its outer face is the barrel surface, so the clip is
-  // never the part that touches the table
-  clip.translate(0, eraserEnd + CLIP_FROM_END + CLIP_LEN / 2, r - CLIP_T / 2);
-  const kc = new Float32Array(clip.getAttribute("position").count * 3);
-  const base = sampler([0, 0, 0]);
-  for (let i = 0; i < kc.length; i += 3) { kc[i] = base[0] * 0.9 + 0.1; kc[i + 1] = base[1] * 0.9 + 0.1; kc[i + 2] = base[2] * 0.9 + 0.1; }
-  clip.setAttribute("color", new THREE.BufferAttribute(kc, 3));
-  g.add(new THREE.Mesh(clip, mat({ roughness: 0.4, metalness: 0.3 })));
+  // grip: grey rubber, the fattest part of the pencil and what it rests on.
+  // Moulded, so it swells out of the barrel over a couple of millimetres at
+  // each end rather than sitting on it as a sleeve.
+  const flare = Math.min(gripLen * 0.18, 0.003);
+  const gripMid = new THREE.CylinderGeometry(gripR, gripR, gripLen - 2 * flare, 32, 1, false);
+  gripMid.translate(0, (gripStart + gripEnd) / 2, 0);
+  add(solid(gripMid, GREY), mat({ roughness: 0.95 }));
+  const flareTop = new THREE.CylinderGeometry(gripR, r * 1.02, flare, 32, 1, false);
+  flareTop.translate(0, gripStart + flare / 2, 0);
+  add(solid(flareTop, GREY), mat({ roughness: 0.95 }));
+  const flareBot = new THREE.CylinderGeometry(r * 1.02, gripR, flare, 32, 1, false);
+  flareBot.translate(0, gripEnd - flare / 2, 0);
+  add(solid(flareBot, GREY), mat({ roughness: 0.95 }));
+
+  // cone and lead: the cone is plastic in the body colour on this pencil,
+  // not a metal ferrule
+  const cone = new THREE.CylinderGeometry(r * 0.30, r * 0.97, coneLen, 28, 1, false);
+  cone.translate(0, coneBase + coneLen / 2, 0);
+  add(solid(cone, colour), mat({ roughness: 0.35 }));
+  const lead = new THREE.CylinderGeometry(r * 0.07, r * 0.24, leadLen, 12, 1, false);
+  lead.translate(0, tip - leadLen / 2, 0);
+  add(solid(lead, LEAD), mat({ roughness: 0.6 }));
+
+  // clip: a wide grey plate lying along the upper barrel, its outer face
+  // flush with the barrel so it is never what touches the table
+  const clipLen = CLIP_LEN * L, clipW = CLIP_W * r * 2, clipT = CLIP_T * r;
+  const clipY = top + CLIP_FROM_TOP * L + clipLen / 2;
+  // it stands proud, but never past the grip's radius, so the clip is
+  // never the part of the pencil that meets the table
+  const clipOut = Math.min(r + clipT * 0.5, gripR - 1e-4);
+  const plate = new THREE.BoxGeometry(clipW, clipLen, clipT);
+  plate.translate(0, clipY, clipOut - clipT / 2);
+  add(solid(plate, CLIP_GREY), mat({ roughness: 0.45 }));
+  // the rounded lip at its free end, and the bridge back to the cap
+  const lip = new THREE.CylinderGeometry(clipT * 0.6, clipT * 0.6, clipW, 10);
+  lip.rotateZ(Math.PI / 2);
+  lip.translate(0, clipY + clipLen / 2, clipOut - clipT / 2);
+  add(solid(lip, CLIP_GREY), mat({ roughness: 0.45 }));
+  const bridge = new THREE.BoxGeometry(clipW * 0.6, clipLen * 0.18, clipT * 2.2);
+  bridge.translate(0, clipY - clipLen / 2, r * 0.9);
+  add(solid(bridge, CLIP_GREY), mat({ roughness: 0.45 }));
 
   g.quaternion.copy(frame);
   g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
-  // the renderer drives the outer group's pose every frame; the inner group
-  // keeps the fixed y-to-axis rotation of the parts
-  const outer = new THREE.Group();
+  const outer = new THREE.Group();   // the renderer drives this one's pose
   outer.add(g);
   return outer;
 }

@@ -496,6 +496,45 @@ for a pencil to see-saw on a single crossing indefinitely. A crossing
 contact patch is a couple of millimetres wide, so the tolerance is 2 mm and
 a pencil now tips until an end reaches the table.
 
+**"Pull a pencil out from under a pile quickly and it phases through. Drop
+one from high up and it phases through."** Real, and the regression suite
+had not been asking. Contact was resolved only at the end of each 16.7 ms
+step, so a pencil moving at 2 m/s travelled 33 mm between tests and could
+start a step above a neighbour and finish below it. Three things fixed it.
+Swept collision detection now samples the segment each body travelled and
+refuses any pair that deepens more than 0.3 mm beyond where it started the
+step, which is what makes it work while a pulled pencil is legitimately
+touching everything; an early version skipped pairs already in contact and
+so switched itself off in exactly the case that needed it. The guard now
+iterates to convergence rather than running three fixed passes, and a held
+body's speed is clamped to 0.25 m/s after integration, not before, where a
+first attempt clamped the previous step's velocity and did nothing.
+Measured: drops went from 7.8 mm of pass-through to 0.0-0.3 mm, fast pulls
+from 7.7 mm to 0.4-2.1 mm. Two new suite checks cover both.
+
+**"Whenever I am moving the pencils around they sometimes phase through the
+ground."** The convergence loop's stopping test measured pencil-pencil
+overlap only. Ground penetration was capped at 1.5 mm of lift per pass, so
+a body pushed 10 mm under the table by a drag needed seven passes, and the
+loop was free to stop after one because no capsule pair overlapped. The
+test now takes the worst of both. All four scenes report 0.00 mm below the
+table across a four-leg drag, and there is a suite check for it.
+
+**"The pencils look nothing like how they actually look. Make it a 1:1
+replica."** They were capsules with colour bands sampled off the photograph,
+which read as mottled rather than moulded. Rebuilt from a reference
+photograph of the pencil as real parts: white eraser standing out of a
+barrel-coloured cap, one solid-colour constant-diameter barrel, a grey clip
+plate with a rounded lip, a moulded grey rubber grip that flares out of the
+barrel, and a cone that is barrel-coloured plastic ending in dark lead. An
+intermediate version drew a metal ferrule, which this pencil does not have.
+Barrel colour is now the most saturated cluster in the reconstruction
+rather than the mean, so the grey grip and the shaded side no longer muddy
+it. Geometry is still tied to the physics: the grip is drawn at the
+particle hull's fattest band and the barrel follows from the real pencil's
+11 mm over 9 mm ratio, so nothing drawn lies outside the body the ground
+rule holds.
+
 ## Round 7
 
 Pending.
