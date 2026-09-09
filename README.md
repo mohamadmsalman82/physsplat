@@ -43,12 +43,12 @@ Early development, built in phases (each ends with a runnable artifact):
 - [x] **Phase 0** — environment, package skeleton, shared constants
 - [x] **Phase 1** — synthetic dataset generator (PyBullet → HDF5): 5,000 trajectories across 7 scene regimes with a poke-and-grab action channel, physics-invariant rejection filters, and visual audit tooling
 - [x] **Phase 2** — the graph network simulator: predictive-edge contact graphs, per-body rigid decoder, analytic Newton-Euler integration, overfit gate passed
-- [x] **Phase 3** — training on Apple Silicon (150k single-step steps), then a self-improving loop of physics-scored fine-tuning experiments: composite score 31.5 → 61.0 (`eval/REPORT.md`, `docs/eval-loop.md`)
+- [x] **Phase 3** — training on Apple Silicon (150k single-step steps), then a self-improving loop of physics-scored fine-tuning experiments: composite score 31.5 → 61.0, and 63.6 with the two analytic rules the same scorecard kept (`eval/REPORT.md`, `docs/eval-loop.md`)
 - [x] **Phase 4** — extensive rollout scorecard (drift, penetration, rest stability, support-removal fidelity, energy) with per-regime breakdown, provenance ledger, and side-by-side films
 - [x] **Phase 5** — local interactive demo (WebSocket server + three.js client, closed-loop spring grabs)
 - [x] **Phase 6** — photo → scene pipeline: TripoSR reconstruction, RANSAC line segmentation of pencils, four real-photo scenes packeted
 - [x] **Phase 7** — in-browser physics: race-free ONNX export, JS runtime parity-verified to microns against Python, then a custom WebGPU backend (hand-written WGSL kernels, ~7x faster than ONNX Runtime Web) so a 4-5 pencil scene steps at 12-16 Hz on an M-series laptop
-- [x] **Phase 8** — public deployment on Vercel, plus a blind-tester loop: an independent agent plays the live demo, scores it harshly, and its findings drive the next round of fixes (`docs/demo-critic.md`)
+- [x] **Phase 8** — public deployment on Vercel, plus a blind-tester loop: an independent agent plays the live demo, scores it harshly, and its findings drive the next round of fixes (`docs/demo-critic.md`). Five rounds so far; every fix it prompted is now covered by a headless regression test that drives the browser simulator with no page (`web/test/rest.mjs`, `web/test/interact.mjs`), and every analytic rule it prompted was scored on the synthetic test set before being kept or dropped.
 
 ## Documentation
 
@@ -70,6 +70,7 @@ src/physsplat/
   export/     ONNX export + Python/browser parity tests
 scripts/      runnable entry points (one per task)
 web/          static three.js app + client-side physics (js/sim.js, js/gpu_net.js)
+web/test/     parity, end-to-end, diagnostics, rest and interaction suites (npm test)
 docs/         design document and build tutorial (LaTeX + PDF)
 ```
 
