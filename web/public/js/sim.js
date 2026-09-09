@@ -26,6 +26,18 @@ const SLEEP_GAP = 3e-4;
 // pencil's static friction; the vertical and angular gates keep falling
 // and toppling bodies out of it.
 const STICTION_V = 0.02, STICTION_VZ = 0.01, STICTION_W = 0.6, STICTION_STEPS = 10;
+// The furthest a non-penetration correction may move a body in one step.
+// 1.5 mm is 90 mm/s, fast enough to clear an overlap in a few frames and
+// slow enough that the correction is never itself a jump through
+// something. The guard runs three times a step, so up to 4.5 mm.
+const MAX_CORRECTION = 1.5e-3;
+// The rest of a correction is delivered as speed: enough to clear an
+// overlap in about three steps, never faster than a pencil is pushed.
+const SEPARATION_BETA = 0.3, SEPARATION_V_MAX = 0.3;
+// TARGET_SPEED_MAX from data generation: the speed a grab was trained at.
+const HELD_SPEED_MAX = 0.25;
+// how many bounded correction passes a step may take to clear an overlap
+const GUARD_PASSES = 12;
 
 export class PhysSim {
   /**
@@ -33,7 +45,9 @@ export class PhysSim {
    *          { kind: "ort", ort, session } (ONNX Runtime Web fallback).
    */
   constructor(backend, runtime, packet,
-              { groundGuard = true, energyRule = false, smooth = false } = {}) {
+              { groundGuard = true, energyRule = false, smooth = false,
+                swept = true } = {}) {
+    this.swept = swept;             // off only to measure what it prevents
     this.backend = backend;
     this.rt = runtime;
     this.packet = packet;
@@ -376,11 +390,118 @@ export class PhysSim {
         if (z < minz) minz = z;
       }
       if (minz < 0) {
-        this.state.pos[b][2] -= minz;
-        if (this.last) this.last.guard.ground[b] += -minz;
+        // capped like the capsule guard: rotating a 150 mm pencil a few
+        // degrees plunges an end far below the floor, and lifting the whole
+        // body out in one step was a 13 mm teleport that carried it through
+        // its neighbours. It comes out over a few steps instead.
+        const lift = Math.min(-minz, MAX_CORRECTION);
+        this.state.pos[b][2] += lift;
+        if (this.last) this.last.guard.ground[b] += lift;
         if (this.state.linvel[b][2] < 0 && this.#lying(b)) this.state.linvel[b][2] = 0;
+        // the rest of the way out through velocity, so the body rises
+        // over a few steps instead of jumping
+        this.state.linvel[b][2] +=
+          Math.min((-minz - lift) * SEPARATION_BETA / this.rt.dt, SEPARATION_V_MAX);
       }
     }
+  }
+
+  /**
+   * Swept collision. The guards below look at where bodies ARE, so they
+   * cannot see a body that was on one side of a pencil at the start of a
+   * step and the other side at the end: at 60 Hz a pencil moving 0.6 m/s
+   * covers 10 mm, more than its own radius, and one yanked out from under
+   * a pile or dropped from a height goes straight through its neighbours.
+   *
+   * Walk the path each body took this step, in slices no longer than half
+   * the smallest radius. At the first slice where a pair overlaps, put
+   * both bodies back to that moment and cancel the speed at which they
+   * were closing: that is the impact, and the ordinary guards then resolve
+   * the contact from a pose where it is visible.
+   */
+  #sweptCollisions(prePos, preQuat) {
+    const bs = this.packet.bodies;
+    if (this.B < 2) return;
+    let maxDisp = 0;
+    for (let b = 0; b < this.B; b++) {
+      const p = this.state.pos[b], q = prePos[b];
+      maxDisp = Math.max(maxDisp, Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]));
+    }
+    const minR = Math.min(...bs.map((x) => x.capsule.radius));
+    this.sweptInfo = { maxDisp, minR, K: 0, hits: 0 };
+    if (maxDisp < 0.5 * minR) return;              // too slow to tunnel
+    // slices no longer than a quarter radius, so an impact is caught while
+    // it is still shallow enough for the guards to resolve outward
+    const K = Math.min(32, Math.ceil(maxDisp / (0.25 * minR)));
+    this.sweptInfo.K = K;
+    const qa = [0, 0, 0, 0];
+    const poseAt = (b, t) => {
+      const p0 = prePos[b], p1 = this.state.pos[b];
+      const pos = [p0[0] + (p1[0] - p0[0]) * t, p0[1] + (p1[1] - p0[1]) * t,
+        p0[2] + (p1[2] - p0[2]) * t];
+      // nlerp is enough over one step's rotation
+      const a = preQuat[b], c = this.state.quat[b];
+      const sign = (a[0] * c[0] + a[1] * c[1] + a[2] * c[2] + a[3] * c[3]) < 0 ? -1 : 1;
+      let n = 0;
+      for (let k = 0; k < 4; k++) { qa[k] = a[k] + (sign * c[k] - a[k]) * t; n += qa[k] * qa[k]; }
+      n = Math.sqrt(n) || 1;
+      return { pos, quat: [qa[0] / n, qa[1] / n, qa[2] / n, qa[3] / n] };
+    };
+    // Baseline: how much each pair already overlapped before the step. A
+    // resting contact sits at about zero and is the ordinary guard's job;
+    // what matters here is overlap that DEEPENS along the path. Excluding
+    // touching pairs outright, as a first version did, switched the check
+    // off exactly where it is needed, since a pencil being pulled out from
+    // under a pile is touching everything it might tunnel through.
+    const startSegs = bs.map((x, b) => capsuleWorld(prePos[b], preQuat[b], x.capsule));
+    const pen0 = new Float64Array(this.B * this.B);
+    for (let i = 0; i < this.B; i++) for (let j = i + 1; j < this.B; j++)
+      pen0[i * this.B + j] = Math.max(0, capsuleClosest(startSegs[i], startSegs[j]).pen);
+
+    for (let k = 1; k <= K; k++) {
+      const t = k / K;
+      const poses = bs.map((_, b) => poseAt(b, t));
+      const segs = bs.map((x, b) => capsuleWorld(poses[b].pos, poses[b].quat, x.capsule));
+      const hits = [];
+      for (let i = 0; i < this.B; i++) for (let j = i + 1; j < this.B; j++) {
+        const c = capsuleClosest(segs[i], segs[j]);
+        if (c.pen > pen0[i * this.B + j] + 3e-4) hits.push({ i, j, n: c.n });
+      }
+      if (!hits.length) continue;
+      // Rewind the WHOLE scene to this moment, so what happens next is
+      // time-consistent, then take the speed out of every pair that has
+      // just met. A five-pencil pile passes the impact along a chain, and
+      // resolving only the first pair left the rest to tunnel.
+      for (let b = 0; b < this.B; b++) {
+        this.state.pos[b] = [...poses[b].pos];
+        this.state.quat[b] = [...poses[b].quat];
+      }
+      for (const { i, j, n } of hits) {
+        const vi = this.state.linvel[i], vj = this.state.linvel[j];
+        const vrel = (vi[0] - vj[0]) * n[0] + (vi[1] - vj[1]) * n[1] + (vi[2] - vj[2]) * n[2];
+        if (vrel >= 0) continue;
+        const mi = this.mass[i], mj = this.mass[j];
+        const wi = mj / (mi + mj), wj = mi / (mi + mj);
+        for (let q = 0; q < 3; q++) {
+          vi[q] -= n[q] * vrel * wi; vj[q] += n[q] * vrel * wj;
+        }
+      }
+      if (this.last) this.last.guard.swept = (this.last.guard.swept ?? 0) + hits.length;
+      this.sweptInfo.hits = hits.length;
+      this.sweptInfo.t = t;
+      return;
+    }
+  }
+
+  /** Deepest capsule overlap in the scene right now (m). */
+  #worstOverlap() {
+    const bs = this.packet.bodies;
+    if (!bs.length || !bs[0].capsule) return 0;
+    const segs = bs.map((b, i) => capsuleWorld(this.state.pos[i], this.state.quat[i], b.capsule));
+    let w = 0;
+    for (let i = 0; i < this.B; i++) for (let j = i + 1; j < this.B; j++)
+      w = Math.max(w, capsuleClosest(segs[i], segs[j]).pen);
+    return w;
   }
 
   /**
@@ -400,13 +521,25 @@ export class PhysSim {
       if (pen <= 0 || dist < 1e-9) continue;
       const mi = this.mass[i], mj = this.mass[j];
       const wi = mj / (mi + mj), wj = mi / (mi + mj);
+      // Separate through VELOCITY, not by teleporting. Moving a body out
+      // of an overlap in one step was a jump of up to 14 mm when a pencil
+      // was yanked from under a pile, and the jump itself carried it
+      // across its neighbour: the pass-through a player sees. The bodies
+      // are given a speed that clears the overlap over the next few
+      // steps, plus a small positional nudge for numerical stability, so
+      // no correction is ever larger than a fraction of a millimetre.
+      const push = Math.min(pen, MAX_CORRECTION);
+      const sep = Math.min(pen * SEPARATION_BETA / this.rt.dt, SEPARATION_V_MAX);
+      const vi2 = this.state.linvel[i], vj2 = this.state.linvel[j];
       for (let k = 0; k < 3; k++) {
-        this.state.pos[i][k] += n[k] * pen * wi;
-        this.state.pos[j][k] -= n[k] * pen * wj;
+        this.state.pos[i][k] += n[k] * push * wi;
+        this.state.pos[j][k] -= n[k] * push * wj;
+        vi2[k] += n[k] * sep * wi;
+        vj2[k] -= n[k] * sep * wj;
       }
       if (this.last) {
-        this.last.guard.capsule[i] += pen * wi;
-        this.last.guard.capsule[j] += pen * wj;
+        this.last.guard.capsule[i] += push * wi;
+        this.last.guard.capsule[j] += push * wj;
         this.last.guard.pairs.push({ i, j, pen });
         // remember which way each body was pushed out, so a grab can stop
         // pressing that way without losing the rest of its pull
@@ -818,6 +951,20 @@ export class PhysSim {
     const prePos = this.state.pos.map((p) => [...p]);
     const preQuat = this.state.quat.map((q) => [...q]);
     stepBodies(this.state, residual, ext, rt.dt, rt.gravity);
+    // Hold a grabbed body to the speed a grab was generated at. Above it
+    // the learned contact response has never seen the situation and stops
+    // resisting, so a pencil yanked from under a pile drove 3-5 mm into
+    // its neighbours faster than the guards could push it out and the
+    // overlap grew every step: what "it phases through" looks like. A hand
+    // moving a pencil out of a pile is not faster than this anyway. The
+    // clamp has to be here, after integration; applying it beforehand, as
+    // a first attempt did, clamps last step's velocity and does nothing.
+    if (actPinch && actBody >= 0) {
+      const v = this.state.linvel[actBody];
+      const sp = Math.hypot(v[0], v[1], v[2]);
+      if (sp > HELD_SPEED_MAX) for (let q = 0; q < 3; q++) v[q] *= HELD_SPEED_MAX / sp;
+    }
+
     const bs = this.packet.bodies;
     if (pivots) for (const { b, P, start, n } of pivots) {
       // rotation about the fixed contact point: v_com = omega x (com - P),
@@ -841,12 +988,22 @@ export class PhysSim {
       }
     }
     if (this.groundGuard) {
+      // before anything else, catch a body that crossed another during the
+      // step rather than ending up overlapping it
+      if (this.swept) this.#sweptCollisions(prePos, preQuat);
       // capsules first: their push can move a body into the floor, and the
       // floor is the hard constraint (diagnostics caught 1 mm "sinking"
       // episodes from the reverse order). Two passes: a pencil dragged out
       // from under two others is a chain, and one pass left 4-7 mm.
-      this.#capsuleGuard(); this.#groundGuard();
-      this.#capsuleGuard(); this.#groundGuard();
+      // Iterate to convergence rather than a fixed number of passes, each
+      // pass still bounded by MAX_CORRECTION so no single one is a jump.
+      // With three fixed passes the grab could drive a pencil into its
+      // neighbour faster than the guard pushed it out and the overlap grew
+      // every step, which is what a player sees as phasing through.
+      for (let it = 0; it < GUARD_PASSES; it++) {
+        this.#capsuleGuard(); this.#groundGuard();
+        if (this.#worstOverlap() < 3e-4) break;
+      }
       this.#settle(prePos, preQuat, actBody);
       // settle restores poses, which undoes the guards' pushes on held
       // bodies: two settled pencils that were nudged into each other stayed
