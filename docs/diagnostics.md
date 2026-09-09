@@ -112,6 +112,25 @@ recorded per step in `guard`:
 
 Each rule sets a flag in the per-step `guard` record (`freeFlight`, `pivot`, `settled`) so a report can always say whether the model or a rule produced a motion.
 
+## What the rules are worth
+
+`web/test/rest.mjs` steps every photo scene for ten seconds with no action,
+through the same simulator the browser runs, and fails if anything rises,
+tilts, drifts or sinks. With the rules on, all four scenes report 0.0 mm
+of rise, 0.5 degrees of tilt at worst, 0.2 mm of drift and no sinking.
+
+The same scenes with the guards off, the learned model alone, in five
+seconds:
+
+| scene | tilt | drift | fall through the floor |
+|---|---|---|---|
+| IMG_8596 | 29.4 deg | 29.1 mm | 55.8 mm |
+| IMG_8626 | 32.2 deg | 27.1 mm | 59.7 mm |
+
+That is the honest position: on reconstructed pencils, well outside its
+training distribution, the network does not hold a pile up on its own, and
+the invariants are what make the demo stand.
+
 ## Why this exists
 
 The first blind test of the demo produced impressions ("feels wrong",

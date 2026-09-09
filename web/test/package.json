@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node parity.mjs && node e2e.mjs && node diag.mjs && node rest.mjs"
   },
   "keywords": [],
   "author": "",
