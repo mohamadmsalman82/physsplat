@@ -122,13 +122,15 @@ def main():
                     help="comma-separated candidate names to run, in order")
     ap.add_argument("--rules", action="store_true",
                     help="run fine-tuning AND evaluation with the analytic "
-                         "invariants the demo uses (free flight, no free "
-                         "energy); baseline included, so the run is comparable")
+                         "rules the demo ships and the scorecard kept (free "
+                         "flight 62.3, plus angular contact fade 63.6, against "
+                         "61.0 without); baseline included, so a run stays "
+                         "comparable within itself")
     args = ap.parse_args()
     if args.rules:
         from physsplat.model.live import LiveSim
         LiveSim.DEFAULT_FREE_FLIGHT = True
-        LiveSim.DEFAULT_ENERGY_RULE = True
+        LiveSim.DEFAULT_FADE = True
     global CANDIDATES
     if args.candidates:
         want = args.candidates.split(",")

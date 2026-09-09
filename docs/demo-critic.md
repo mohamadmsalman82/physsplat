@@ -287,7 +287,23 @@ Two rules written earlier in this round were **measured and rejected**:
 | + two-tap residual mean | 34.2 | 0.21 | 30 mm |
 
 Both are off by default now, kept behind flags so the numbers can be
-reproduced. What replaced them:
+reproduced. What replaced the first of them, the angular contact fade, was
+then scored the same way and **kept**, because it is the first analytic
+rule since free flight that makes the model better rather than merely
+safer:
+
+| | composite | trans 150 | axis 150 | surface pen | stability | photo drift |
+|---|---|---|---|---|---|---|
+| model alone | 61.0 | 22.0 mm | 0.177 | 1.6 mm | 0.83 | 9 mm |
+| + free flight | 62.3 | 21.2 mm | 0.186 | 1.6 mm | 0.83 | 9 mm |
+| + angular fade | **63.6** | **18.6 mm** | **0.180** | **1.5 mm** | 0.83 | 17 mm |
+
+Both kept rules ship in the demo and both are flags on
+`scripts/evaluate.py`. The one regression is honest and worth stating:
+passive drift on the photo scenes rises from 9 mm to 17 mm over three
+seconds without any guards, which the demo's settle rule then hides.
+
+What replaced them:
 
 - **Angular contact fade.** Contact torque must vanish as a body
   separates; the model's does not, so lifting a pencil out of a pile it
