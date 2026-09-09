@@ -45,21 +45,20 @@ sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.near = 0.1; sun.shadow.camera.far = 3;
 sun.shadow.camera.left = sun.shadow.camera.bottom = -0.4;
 sun.shadow.camera.right = sun.shadow.camera.top = 0.4;
-// curved surfaces an ellipse apart in depth were self-shadowing into dark
-// bands across the barrels; normalBias offsets along the normal, which is
-// what round geometry needs
-sun.shadow.bias = -0.0002;
-sun.shadow.normalBias = 0.02;
+// normalBias offsets the shadow lookup along the surface normal, so it has
+// to be small next to the object: 20 mm on a 4.5 mm pencil detached every
+// shadow from its caster (a blind tester saw "wrongly shaped streaks that
+// match no pencil"). 1.5 mm is a third of the radius, enough for the
+// curvature and invisible as an offset.
+sun.shadow.bias = -0.0001;
+sun.shadow.normalBias = 0.0015;
 scene.add(sun);
+// a lit wooden table, not a dark grid in a void
 const ground = new THREE.Mesh(
   new THREE.CircleGeometry(0.6, 64),
-  new THREE.MeshStandardMaterial({ color: 0x3a3226, roughness: 0.85, metalness: 0 }));
+  new THREE.MeshStandardMaterial({ color: 0x8a6f4e, roughness: 0.75, metalness: 0 }));
 ground.receiveShadow = true;
 scene.add(ground);
-const grid = new THREE.GridHelper(1, 40, 0x2a2f38, 0x20242c);
-grid.rotation.x = Math.PI / 2;
-grid.position.z = 0.0005;
-scene.add(grid);
 
 // ---------------------------------------------------------------- runtime
 let sim = null, groups = [], proxies = [], loading = false;

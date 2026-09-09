@@ -487,7 +487,11 @@ export class PhysSim {
         Math.hypot(...v) < 0.03 && Math.hypot(...w) < 0.6) ||
         this.guardHeld[b] >= GUARD_HELD_STEPS;
       this.restCount[b] = slow ? this.restCount[b] + 1 : 0;
-      if (this.restCount[b] === SETTLE_STEPS) {
+      // every settled step, not only the first: a body that settles during
+      // the load pre-roll and only later ends up with a gap under it would
+      // otherwise keep it forever (a blind tester measured resting gaps of
+      // 1.8-3.0 mm and said, correctly, that nothing was touching anything)
+      if (this.restCount[b] >= SETTLE_STEPS) {
         // The model's contact response equilibrates 2-5 mm above whatever
         // it landed on (particle contact radius 6 mm), so a pencil that
         // just came to rest hovers slightly. Close that gap once, when it

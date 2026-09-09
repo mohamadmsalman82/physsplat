@@ -75,7 +75,10 @@ export function buildPencil(body) {
   // barrel: cylinder from the eraser hemisphere to the cone base
   const eraserEnd = -L / 2 + r, coneBase = L / 2 - TIP_LEN;
   const barrelLen = coneBase - eraserEnd;
-  const barrel = new THREE.CylinderGeometry(r, r, barrelLen, 28, 1, true);
+  // closed, not open-ended: with front-face culling an open tube lets you
+  // see straight through the barrel to whatever is behind it, which a
+  // blind tester read as "the pencils are semi-transparent"
+  const barrel = new THREE.CylinderGeometry(r, r, barrelLen, 28, 1, false);
   barrel.translate(0, eraserEnd + barrelLen / 2, 0);
   colorize(barrel, sampler, M);
   g.add(new THREE.Mesh(barrel, mat()));
