@@ -88,6 +88,19 @@ What the probes exposed, and the fixes (commit after `6668ee3`):
    gravity feed-forward in the grab force, still under the trained cap.
 4. Capsule guard ran after the ground guard and could push a body 1 mm into
    the floor; order swapped.
+5. **A pencil that landed on its end stayed tilted**, 9-14 degrees up
+   with the far end in the air and nothing under it: the model reads the
+   one floor contact as support (residual +9.5) and settle then locked the
+   pose. Fix: pivot rule. A body whose only support is one region of the
+   floor while tilted more than 3 degrees is integrated as a pendulum about
+   that contact until it lies flat (with 0.2 restitution at the far end's
+   impact). Measured: 24.7 to 0.4 degrees in 5 steps, flat and at rest in
+   0.30 s, no bounce-back. This is the analytic answer to the round-1
+   "tip balancing" complaint as well. Detector `tilt_hold` now flags any
+   case that slips through.
+6. **Landed pencils hovered 2-5 mm** above whatever they landed on (the
+   model's contact equilibrium), and settle locked the gap. Fix: the gap
+   is closed once when the body settles. Measured: 1.9 mm to 0.0 mm.
 
 Model-quality numbers worth keeping an eye on: the residual shortfall at
 rest (0.15-0.36 m/s^2), a 2-3 mm gap before contact response engages, and

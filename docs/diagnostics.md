@@ -42,6 +42,7 @@ when it stops; both are logged as events with duration and peak.
 | `sinking:<b>` | a surface particle more than 1 mm below the floor (error above 3 mm) |
 | `floating:<b>` | resting for 20 steps, no contact, lowest point above 6 mm, no action on it in the last 20 steps |
 | `tip_balance:<b>` | axis more than 60 degrees from horizontal, touching the floor, still for 30 steps |
+| `tilt_hold:<b>` | axis more than 4 degrees from horizontal, one end on the floor, nothing else touching it, still for 30 steps (a pencil cannot rest like that) |
 | `creep:<b>` | classified at rest for 60 steps yet drifted more than 2 mm from where it stopped |
 | `creep_rot:<b>` | same, rotated more than 3 degrees |
 | `penetration:<i>-<j>` | capsule overlap deeper than 2 mm (error above 5 mm) |
@@ -93,8 +94,11 @@ after it in the demo (never during evaluation), and every intervention is
 recorded per step in `guard`:
 
 - **free flight**: a body with no edge to another body and no particle within the contact radius of the floor gets a zero residual; only gravity and the applied force act on it. Without this, a pencil released in mid-air hovered (the network never saw a motionless unsupported body in training).
+- **pivot**: a body whose only support is one region of the floor while its axis is tilted more than 3 degrees is integrated as a pendulum about that contact (gravity's torque over the inertia about the pivot, model residual dropped, centre of mass moving with omega x r), with an impact damping of 0.2 when the far end reaches the floor. Without this a pencil that landed on its end was held 9-14 degrees up with the other end in the air, and pencils balanced on their tips (the round-1 tester's complaint).
 - **ground / capsule guards**: residual overlap with the floor or another capsule is removed and the approaching velocity cancelled.
-- **settle**: a supported body that has been slow for 12 steps is held exactly still (pose restored) until something acts on it. Zeroing velocity alone left a slow sideways creep driven by the guards.
+- **settle**: a supported body that has been slow for 12 steps is held exactly still (pose restored) until something acts on it. Zeroing velocity alone left a slow sideways creep driven by the guards. At the moment a body settles, a gap of up to 6 mm to the floor or to the nearest capsule is closed once, because the model's contact response equilibrates 2-5 mm above whatever it landed on.
+
+Each rule sets a flag in the per-step `guard` record (`freeFlight`, `pivot`, `settled`) so a report can always say whether the model or a rule produced a motion.
 
 ## Why this exists
 

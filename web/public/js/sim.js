@@ -79,8 +79,70 @@ export class PhysSim {
         pairs: [],                         // {i, j, pen} overlaps corrected
         settled: new Uint8Array(B),        // 1 if settle held the body still
         freeFlight: new Uint8Array(B),     // 1 if the model residual was zeroed
+        pivot: new Uint8Array(B),          // 1 if the pivot rule drove the body
       },
     };
+  }
+
+  /**
+   * Pivot rule. A body whose only support is one region of the floor while
+   * its axis is tilted cannot be at rest: gravity's torque about the contact
+   * must rotate it flat. The network holds such a body still (a pencil that
+   * lands on its end came to rest 9 degrees up with the far end in the air;
+   * the round-1 tester saw pencils balanced on their tips). For that case
+   * the body is integrated analytically as a pendulum about the contact
+   * point: alpha = (r x m g) / I_pivot, the model residual is dropped, and
+   * the centre of mass moves with omega x r so the contact stays put. Hands
+   * back to the model once the axis is within 3 degrees of flat or anything
+   * else touches the body.
+   */
+  #pivotRule(parts, ext, actBody) {
+    const bs = this.packet.bodies, rt = this.rt, g = rt.gravity;
+    const segs = bs.map((b, i) => capsuleWorld(this.state.pos[i], this.state.quat[i], b.capsule));
+    const out = [];
+    let k = 0;
+    for (let b = 0; b < this.B; b++) {
+      const n = this.counts[b], start = k; k += n;
+      if (b === actBody || this.last.guard.freeFlight[b]) continue;
+      if (Math.abs(segs[b].a[2]) < 0.0523) continue;             // within 3 deg of flat
+      let lowest = Infinity, li = -1;
+      for (let i = start; i < start + n; i++)
+        if (parts[3 * i + 2] < lowest) { lowest = parts[3 * i + 2]; li = i; }
+      // "on the floor" is the model's own contact zone: it holds a landed
+      // end 3-5 mm up (particle contact radius 6 mm), so a 1.5 mm test
+      // waited a second for the end to sink before the rule engaged
+      if (lowest > 4e-3) continue;                                // not on the floor
+      let touching = false;
+      for (let j = 0; j < this.B && !touching; j++)
+        if (j !== b && capsuleClosest(segs[b], segs[j]).pen > -3e-3) touching = true;
+      if (touching) continue;                                     // leaning on something
+      const P = [parts[3 * li], parts[3 * li + 1], parts[3 * li + 2]];
+      const c = this.state.pos[b], m = this.mass[b];
+      const r = [c[0] - P[0], c[1] - P[1], c[2] - P[2]];
+      // torque of gravity about P: r x (0, 0, -m g)
+      const tq = [-r[1] * m * g, r[0] * m * g, 0];
+      const tn = Math.hypot(tq[0], tq[1], tq[2]);
+      if (tn < 1e-12) continue;
+      const u = tq.map((x) => x / tn);
+      // inertia about the pivot along u: u^T (R I R^T) u + m |r|^2
+      const R = quatToMatrix(this.state.quat[b]), I = this.inertia[b];
+      const ub = [R[0] * u[0] + R[3] * u[1] + R[6] * u[2],
+        R[1] * u[0] + R[4] * u[1] + R[7] * u[2],
+        R[2] * u[0] + R[5] * u[1] + R[8] * u[2]];              // u in body frame
+      const Ip = I[0] * ub[0] ** 2 + I[1] * ub[1] ** 2 + I[2] * ub[2] ** 2 +
+        m * (r[0] ** 2 + r[1] ** 2 + r[2] ** 2);
+      const alpha = tn / Ip;
+      for (let q = 0; q < 6; q++) this.last.residual[6 * b + q] = 0;
+      for (let q = 0; q < 3; q++) ext.ang[3 * b + q] += alpha * u[q];
+      // keep only the spin about the pivot axis: a body arriving with an
+      // unrelated spin would otherwise drift its contact point
+      const w = this.state.angvel[b];
+      const wu = w[0] * u[0] + w[1] * u[1] + w[2] * u[2];
+      for (let q = 0; q < 3; q++) w[q] = wu * u[q];
+      this.last.guard.pivot[b] = 1;
+      out.push({ b, P });
+    }
+    return out;
   }
 
   /**
@@ -213,10 +275,14 @@ export class PhysSim {
     // (elevation > 45 deg) is left to the model so it can fall over.
     const segs = bs.map((b, i) => capsuleWorld(this.state.pos[i], this.state.quat[i], b.capsule));
     const supported = new Uint8Array(this.B);
+    const gap = new Float64Array(this.B).fill(Infinity);   // to nearest capsule
     for (let i = 0; i < this.B; i++) {
       if (this.#lying(i)) supported[i] = 1;
-      for (let j = i + 1; j < this.B; j++)
-        if (capsuleClosest(segs[i], segs[j]).pen > -1.5e-3) { supported[i] = 1; supported[j] = 1; }
+      for (let j = i + 1; j < this.B; j++) {
+        const g = -capsuleClosest(segs[i], segs[j]).pen;
+        if (g < 1.5e-3) { supported[i] = 1; supported[j] = 1; }
+        gap[i] = Math.min(gap[i], g); gap[j] = Math.min(gap[j], g);
+      }
     }
     for (let b = 0; b < this.B; b++) {
       const v = this.state.linvel[b], w = this.state.angvel[b];
@@ -224,6 +290,23 @@ export class PhysSim {
       const slow = b !== actBody && supported[b] && !standing &&
         Math.hypot(...v) < 0.012 && Math.hypot(...w) < 0.35;
       this.restCount[b] = slow ? this.restCount[b] + 1 : 0;
+      if (this.restCount[b] === 12) {
+        // The model's contact response equilibrates 2-5 mm above whatever
+        // it landed on (particle contact radius 6 mm), so a pencil that
+        // just came to rest hovers slightly. Close that gap once, when it
+        // settles: drop it by the smaller of the floor gap and the capsule
+        // gap. The capsule guard next step resolves any resulting overlap.
+        const R = quatToMatrix(this.state.quat[b]);
+        let lowest = Infinity;
+        for (const o of this.offsets[b])
+          lowest = Math.min(lowest, R[6] * o[0] + R[7] * o[1] + R[8] * o[2] + this.state.pos[b][2]);
+        const drop = Math.max(0, Math.min(lowest, gap[b]));
+        if (drop > 3e-4 && drop < 6e-3) {
+          this.state.pos[b][2] -= drop;
+          prePos[b][2] -= drop;
+          if (this.last) this.last.guard.ground[b] -= drop;   // recorded as a negative lift
+        }
+      }
       if (this.restCount[b] >= 12) {
         v[0] = v[1] = v[2] = 0; w[0] = w[1] = w[2] = 0;
         this.state.pos[b] = [...prePos[b]];
@@ -395,10 +478,32 @@ export class PhysSim {
       this.inertia, actBody, actPoint ?? [0, 0, 0], actForce ?? [0, 0, 0],
       this.B);
     this.last.ext = ext;
-    if (this.groundGuard) this.#freeFlight(parts, senders, receivers);
+    let pivots = null;
+    if (this.groundGuard) {
+      this.#freeFlight(parts, senders, receivers);
+      pivots = this.#pivotRule(parts, ext, actBody);
+    }
     const prePos = this.state.pos.map((p) => [...p]);
     const preQuat = this.state.quat.map((q) => [...q]);
     stepBodies(this.state, residual, ext, rt.dt, rt.gravity);
+    const bs = this.packet.bodies;
+    if (pivots) for (const { b, P } of pivots) {
+      // rotation about the fixed contact point: v_com = omega x (com - P),
+      // replacing the free integration of the centre of mass
+      const w = this.state.angvel[b], c = prePos[b];
+      const r = [c[0] - P[0], c[1] - P[1], c[2] - P[2]];
+      const v = [w[1] * r[2] - w[2] * r[1], w[2] * r[0] - w[0] * r[2], w[0] * r[1] - w[1] * r[0]];
+      this.state.linvel[b] = v;
+      this.state.pos[b] = [c[0] + v[0] * rt.dt, c[1] + v[1] * rt.dt, c[2] + v[2] * rt.dt];
+      // the far end reaching the floor is an impact: a pencil's end on a
+      // table keeps little of its speed (restitution ~0.2), and without this
+      // the swing carried through and the pencil bounced 12 degrees back up
+      const R = quatToMatrix(this.state.quat[b]);
+      const az = R[6] * bs[b].capsule.axis[0] + R[7] * bs[b].capsule.axis[1] + R[8] * bs[b].capsule.axis[2];
+      if (Math.abs(az) < 0.0523) {
+        for (let q = 0; q < 3; q++) { this.state.linvel[b][q] *= 0.2; this.state.angvel[b][q] *= 0.2; }
+      }
+    }
     if (this.groundGuard) {
       // capsules first: their push can move a body into the floor, and the
       // floor is the hard constraint (diagnostics caught 1 mm "sinking"

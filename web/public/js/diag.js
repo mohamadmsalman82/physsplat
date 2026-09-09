@@ -155,6 +155,7 @@ export class Diagnostics {
           capsule_mm: last.guard.capsule[i] * 1e3,
           settled: !!last.guard.settled[i],
           freeFlight: !!last.guard.freeFlight[i],
+          pivot: !!last.guard.pivot?.[i],
         } : null,
       };
       bodies.push(b);
@@ -216,6 +217,9 @@ export class Diagnostics {
       if (b.elevation_deg > 60 && b.lowest < 3e-3 && b.restingSteps >= 30)
         add("tip_balance", id, "error", b.elevation_deg,
           `body ${id} balanced on its end at ${b.elevation_deg.toFixed(0)} deg for ${b.restingSteps} steps`, { body: id });
+      else if (b.elevation_deg > 4 && b.lowest < 3e-3 && !b.contacts.length && b.restingSteps >= 30)
+        add("tilt_hold", id, "error", b.elevation_deg,
+          `body ${id} rests tilted ${b.elevation_deg.toFixed(1)} deg with one end on the floor and nothing under the other`, { body: id });
       if (b.restingSteps >= 60 && b.driftSinceRest_mm > 2)
         add("creep", id, "warn", b.driftSinceRest_mm,
           `body ${id} drifted ${b.driftSinceRest_mm.toFixed(1)} mm while classified at rest`, { body: id });
@@ -290,7 +294,7 @@ export class Diagnostics {
         KE_uJ: r3(b.KE * 1e6, 2),
         model_accel: b.model ? { lin: r3(b.model.lin, 3), ang: r3(b.model.ang, 2) } : null,
         guard: b.guard ? { ground_mm: r3(b.guard.ground_mm, 2), capsule_mm: r3(b.guard.capsule_mm, 2),
-          settled: b.guard.settled, freeFlight: b.guard.freeFlight } : null,
+          settled: b.guard.settled, freeFlight: b.guard.freeFlight, pivot: b.guard.pivot } : null,
       })),
       pairs: f.pairs.map((p) => ({ ...p, gap_mm: r3(p.gap_mm, 1) })),
       totals: { KE_uJ: r3(f.totals.KE * 1e6, 2), maxPenetration_mm: r3(f.totals.maxPenetration_mm, 1),
@@ -344,6 +348,7 @@ export class Diagnostics {
       s.guard_mm.push(b.guard ? r3(b.guard.ground_mm + b.guard.capsule_mm, 2) : 0);
       s.free.push(b.guard?.freeFlight ? 1 : 0);
       s.settled.push(b.guard?.settled ? 1 : 0);
+      (s.pivot ??= []).push(b.guard?.pivot ? 1 : 0);
     }
     return s;
   }
@@ -535,7 +540,9 @@ export class Probes {
       const b = f.bodies[body];
       const free = !!b.guard?.freeFlight;
       if (k <= 40) series.push({ k, lowest_mm: r3(b.lowest * 1e3, 1), vz: r3(b.linvel[2], 3),
+        elev: r3(b.elevation_deg, 1),
         model_z: b.model ? r3(b.model.lin[2], 2) : null, free: free ? 1 : 0,
+        pivot: b.guard?.pivot ? 1 : 0,
         settled: b.guard?.settled ? 1 : 0, contacts: b.contacts.map((c) => c.other),
         ground: b.groundContact ? 1 : 0, guard_mm: b.guard ? r3(b.guard.ground_mm + b.guard.capsule_mm, 2) : 0 });
       maxHeight = Math.max(maxHeight, b.height); minLowest = Math.min(minLowest, b.lowest);
