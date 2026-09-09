@@ -189,6 +189,42 @@ export function stepBodies(state, residual, ext, dt, gravity) {
   }
 }
 
+// ---------------------------------------------------------------- capsules
+// Every demo body carries a capsule proxy {axis (body frame), half, radius}.
+// Shared by the guards (sim.js) and the diagnostics (diag.js) so both
+// report the same contact geometry.
+
+const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+
+/** Capsule in world space: center p, unit axis a, half length h, radius r. */
+export function capsuleWorld(pos, quat, cap) {
+  const R = quatToMatrix(quat);
+  return { p: pos, a: matVec(R, cap.axis), h: cap.half, r: cap.radius };
+}
+
+/**
+ * Closest points between the axis segments of two capsules (p +/- h*a).
+ * Returns the axis distance, the overlap `pen` (positive when the capsules
+ * interpenetrate), the unit normal from B toward A, and both points.
+ */
+export function capsuleClosest(A, B) {
+  const r = [A.p[0] - B.p[0], A.p[1] - B.p[1], A.p[2] - B.p[2]];
+  const dot = (u, v) => u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+  const aa = dot(A.a, A.a), ee = dot(B.a, B.a), bb = dot(A.a, B.a);
+  const cc = dot(A.a, r), ff = dot(B.a, r);
+  const den = aa * ee - bb * bb;
+  let s = den > 1e-12 ? (bb * ff - cc * ee) / den : 0;
+  s = clamp(s, -A.h, A.h);
+  let t = clamp((bb * s + ff) / ee, -B.h, B.h);
+  s = clamp((bb * t - cc) / aa, -A.h, A.h);
+  const ca = [A.p[0] + s * A.a[0], A.p[1] + s * A.a[1], A.p[2] + s * A.a[2]];
+  const cb = [B.p[0] + t * B.a[0], B.p[1] + t * B.a[1], B.p[2] + t * B.a[2]];
+  const d = [ca[0] - cb[0], ca[1] - cb[1], ca[2] - cb[2]];
+  const dist = Math.hypot(d[0], d[1], d[2]);
+  const n = dist > 1e-9 ? d.map((x) => x / dist) : [0, 0, 1];
+  return { dist, pen: A.r + B.r - dist, n, ca, cb, s, t };
+}
+
 // ---------------------------------------------------------------- features
 
 export function actionFeature(parts, sel, point, force, mass, sigma) {

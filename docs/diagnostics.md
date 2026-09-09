@@ -1,0 +1,106 @@
+# Demo diagnostics
+
+The live demo carries a transparent diagnostic layer so that anyone testing
+it, a person or an agent, reads what the pencils are doing from numbers
+instead of inferring it from pixels. Everything below is computed from the
+physics state, the capsule proxies and the per-step record the simulator
+keeps (model residual, external accelerations, guard corrections). Nothing
+is read from the screen.
+
+Open the demo, press **D** (or add `?diag=1` to the URL) for the live panel.
+In the browser console (or through any automation that can evaluate
+JavaScript on the page) the same data is under `physsplat`.
+
+Units are SI unless the field name ends in `_mm`, `_deg`, `_ms`, `_uJ`.
+Quaternions are `[x, y, z, w]`. Body ids index `packet.bodies`.
+
+## Reading state
+
+| Call | Returns |
+|---|---|
+| `physsplat.state()` / `physsplat.diag.snapshot()` | the current frame with rounded numbers: per body position, axis, speed, angular speed, height, lowest surface point, elevation of the axis from horizontal, contacts with gaps, support relations, penetration, resting status and drift since coming to rest, kinetic energy, the model's predicted acceleration, and what each guard did this step; plus scene totals, timing, and active anomalies |
+| `physsplat.diag.history(n, fields?)` | the last `n` frames (newest last), compact; `fields` limits per-body keys, e.g. `["pos","speed","contacts"]` |
+| `physsplat.diag.track(body, n)` | time series for one body: `z`, `lowest_mm`, `vz`, `speed`, `angSpeed`, `elevation_deg`, `penetration_mm`, `contacts`, `resting`, `model_lin_z`, `guard_mm`, `free`, `settled` |
+| `physsplat.diag.check()` | anomalies active right now, each with type, severity, body, duration in steps, peak value, message |
+| `physsplat.diag.events(n, type?)` | the event log: scene loads and resets, pointer grabs and pokes, probe actions, anomaly episodes starting and ending |
+| `physsplat.diag.summary(n)` | aggregates over the last `n` steps: per body displacement, rotation, max speed, max penetration, lowest point, fraction of steps in ground contact or at rest, total guard correction, final contacts and resting gap; anomaly counts; mean step time |
+| `physsplat.diag.export({last})` | one JSON string with the scene, body parameters, load corrections, events, summary and frames |
+
+The simulator's own per-step record is at `physsplat.sim.last`
+(`residual` in SI accelerations per body, `ext`, `action`, `guard`), the raw
+state at `physsplat.sim.state`, and `physsplat.paused = true` /
+`physsplat.stepOnce = true` freeze and single-step the physics.
+
+## Anomaly detectors
+
+Run on every frame. An episode starts when a detector first fires and ends
+when it stops; both are logged as events with duration and peak.
+
+| key | fires when |
+|---|---|
+| `explosion:<b>` | speed > 3 m/s or angular speed > 100 rad/s |
+| `sinking:<b>` | a surface particle more than 1 mm below the floor (error above 3 mm) |
+| `floating:<b>` | resting for 20 steps, no contact, lowest point above 6 mm, no action on it in the last 20 steps |
+| `tip_balance:<b>` | axis more than 60 degrees from horizontal, touching the floor, still for 30 steps |
+| `creep:<b>` | classified at rest for 60 steps yet drifted more than 2 mm from where it stopped |
+| `creep_rot:<b>` | same, rotated more than 3 degrees |
+| `penetration:<i>-<j>` | capsule overlap deeper than 2 mm (error above 5 mm) |
+| `jitter:<b>` | vertical velocity changed sign more than 8 times in 30 steps at amplitudes above 2 mm/s |
+| `spontaneous_motion:scene` | kinetic energy rising for 10 steps with no action for 90 steps |
+
+Contacts use a 3 mm gap tolerance between capsule surfaces because the
+model resolves contact at particle level (6 mm contact radius) and settles
+stacked bodies a millimetre or three apart. The resting gap is reported so
+it can be judged rather than hidden.
+
+## Probes: scripted experiments
+
+Probes drive the same grab and poke code paths as the mouse, sample the
+diagnostics every step, and return a report with measurements. They are
+`async`, take real time, and by default reset the scene first so results
+are reproducible. Grab points are `"center"`, `"end"`, `"tip"`, a number in
+[-1, 1] along the axis, or a body-frame `[x, y, z]`.
+
+```js
+await physsplat.probe.rest({steps: 180})                 // does anything move untouched?
+await physsplat.probe.lift(2, {height: 0.05})            // grab, raise 5 cm, hold, release
+await physsplat.probe.grab(2, {at: "end", delta: [0.06, 0, 0]})   // off-center drag
+await physsplat.probe.poke(2, {dir: [1, 0, 0], dv: 0.2}) // flick
+await physsplat.probe.pullBottom()                       // pull the most load-bearing pencil out
+await physsplat.probe.drop(2, {height: 0.05})            // teleport up, watch it fall
+await physsplat.probe.all()                              // the whole battery, ~1 min
+```
+
+If your harness cannot wait on a promise for that long, use the
+non-blocking runner:
+
+```js
+const id = physsplat.run("lift", 2, {height: 0.05});    // returns immediately
+physsplat.report(id)        // {status: "running"|"done"|"error", result}
+```
+
+What the reports contain:
+
+- **rest**: per-body displacement, rotation, guard totals, resting fraction, anomalies, and a verdict (`still` or which bodies moved).
+- **grab / lift / pullBottom**: tracking error between the cursor target and the grab point (mean, max, final, requested vs achieved displacement), the body's pose at release, how far every other body moved, and an `after_release` block: fitted free-fall acceleration and its ratio to g, contact onset, impact speed against the analytic value, bounces, lowest point reached, time to rest, final contacts, plus a 40-step series of height, vertical velocity, model residual and guard flags. `pullBottom` adds, for each body the pulled pencil was supporting, how far it dropped and what it now rests on.
+- **poke**: peak speed and angular speed against the requested velocity change, stop time, displacement, rotation, how far neighbours moved.
+- **drop**: the `after_release` block for a body released from rest in mid-air.
+
+## Guards and the model
+
+The learned model does the contact physics. Three analytic rules clean up
+after it in the demo (never during evaluation), and every intervention is
+recorded per step in `guard`:
+
+- **free flight**: a body with no edge to another body and no particle within the contact radius of the floor gets a zero residual; only gravity and the applied force act on it. Without this, a pencil released in mid-air hovered (the network never saw a motionless unsupported body in training).
+- **ground / capsule guards**: residual overlap with the floor or another capsule is removed and the approaching velocity cancelled.
+- **settle**: a supported body that has been slow for 12 steps is held exactly still (pose restored) until something acts on it. Zeroing velocity alone left a slow sideways creep driven by the guards.
+
+## Why this exists
+
+The first blind test of the demo produced impressions ("feels wrong",
+"pencils phase through each other") that took hours to trace. The first
+scripted probe found, in one run, that a released pencil never fell, that
+resting pencils crept 9 mm in four seconds, and that a held pencil sagged
+12.5 mm below the cursor, each with the mechanism visible in the numbers.
+`docs/demo-critic.md` keeps the ledger of rounds.

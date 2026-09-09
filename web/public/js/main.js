@@ -5,6 +5,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { PhysSim } from "./sim.js";
+import { Diagnostics, Probes } from "./diag.js";
 
 const $ = (id) => document.getElementById(id);
 const err = (m) => { $("err").textContent = String(m); console.error(m); };
@@ -56,11 +57,45 @@ scene.add(grid);
 
 // ---------------------------------------------------------------- runtime
 let sim = null, groups = [], proxies = [], loading = false;
-// Debug handle (?pause=1 starts frozen): lets a test harness inspect body
-// state and single-step the physics from the console.
-const dbg = { paused: Q.get("pause") === "1", stepOnce: false,
-  get sim() { return sim; }, get proxies() { return proxies; } };
+// Debug / diagnostics handle (docs/diagnostics.md). ?pause=1 starts frozen;
+// ?diag=1 opens the live panel. A test harness reads physsplat.diag.* and
+// runs physsplat.probe.* instead of inferring physics from pixels.
+let diag = null;
+const dbg = {
+  paused: Q.get("pause") === "1", stepOnce: false,
+  scriptDrag: null,    // {body, local, target}: a grab driven by a probe
+  scriptPoke: null,    // {body, point, force, left}: a poke driven by a probe
+  get sim() { return sim; }, get proxies() { return proxies; },
+  get diag() { return diag; }, probe: null,
+  resetScene() { resetScene(); },
+  state() { return diag?.snapshot(); },
+  // Non-blocking probe runner for harnesses whose eval calls time out:
+  //   id = physsplat.run("lift", 2, {height: 0.05}); ... physsplat.report(id)
+  reports: {}, _runId: 0,
+  run(name, ...args) {
+    const id = ++dbg._runId;
+    const rep = dbg.reports[id] = { id, name, args, status: "running", started: new Date().toISOString() };
+    if (!dbg.probe?.[name]) { rep.status = "error"; rep.error = `no probe named ${name}`; return id; }
+    dbg.probe[name](...args)
+      .then((r) => { rep.status = "done"; rep.result = r; rep.finished = new Date().toISOString(); })
+      .catch((e) => { rep.status = "error"; rep.error = String(e && e.stack || e); });
+    return id;
+  },
+  report(id) { return dbg.reports[id ?? dbg._runId] ?? null; },
+};
 globalThis.physsplat = dbg;
+
+// Yield to the event loop between physics steps. setTimeout is throttled to
+// 1 Hz in a background tab, which froze scripted probes run from a hidden
+// tab; a MessageChannel round-trip is not throttled, so use it whenever the
+// page is hidden (the renderer is idle then anyway).
+const yieldChannel = new MessageChannel();
+let yieldResolve = null;
+yieldChannel.port1.onmessage = () => { const r = yieldResolve; yieldResolve = null; r?.(); };
+function yieldSlice(ms) {
+  if (document.hidden) return new Promise((res) => { yieldResolve = res; yieldChannel.port2.postMessage(0); });
+  return new Promise((res) => setTimeout(res, ms));
+}
 
 async function loadScene(name) {
   loading = true;                      // physics loop idles until rebuilt
@@ -71,6 +106,9 @@ async function loadScene(name) {
   prevState = currState = null;
   sim.packet = packet;
   sim.reset();
+  dbg.scriptDrag = dbg.scriptPoke = null;
+  if (!diag) { diag = new Diagnostics(sim); dbg.probe = new Probes(dbg, sim, diag); }
+  else diag.reset(`scene:${name}`);
   packet.bodies.forEach((b, i) => {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position",
@@ -194,6 +232,7 @@ renderer.domElement.addEventListener("pointerdown", (e) => {
   const local = p.clone().sub(proxies[body].position).applyQuaternion(inv);
   drag = { body, local, target: p.clone(), p0: p.clone(),
     t0: performance.now(), moved: false };
+  diag?.event("pointer_down", { body, local: local.toArray().map((x) => +x.toFixed(4)) });
 });
 renderer.domElement.addEventListener("pointermove", (e) => {
   if (!drag) return;
@@ -222,18 +261,51 @@ renderer.domElement.addEventListener("pointerup", () => {
       point: worldGrabPoint(drag).toArray(),
       force: dv.multiplyScalar(m / (rt.poke.steps * rt.dt)).toArray(),
       left: rt.poke.steps };
+    diag?.event("poke", { body: drag.body, dv: +dv.length().toFixed(3) });
+  } else if (drag) {
+    diag?.event("grab_end", { body: drag.body, held_ms: Math.round(performance.now() - drag.t0) });
   }
   drag = null;
   controls.enabled = true;
 });
 renderer.domElement.addEventListener("pointercancel", () => { drag = null; controls.enabled = true; });
 renderer.domElement.addEventListener("pointerleave", () => { if (drag) { drag = null; controls.enabled = true; } });
-$("reset").onclick = () => { sim?.reset(); prevState = currState = null; syncTransforms(); resetCamera(); };
+
+function resetScene() {
+  if (!sim) return;
+  sim.reset();
+  dbg.scriptDrag = dbg.scriptPoke = null;
+  pendingPoke = null;
+  prevState = currState = null;
+  diag?.reset("reset");
+  syncTransforms();
+  resetCamera();
+}
+$("reset").onclick = resetScene;
 
 function worldGrabPoint(d) {
   return d.local.clone()
     .applyQuaternion(proxies[d.body].quaternion)
     .add(proxies[d.body].position);
+}
+
+/** Spring-damper grab force toward `target` for the grab point `wp`
+ * (arrays), with gravity feed-forward so a held pencil sits at the cursor
+ * instead of sagging g/omega^2 = 12.5 mm below it (measured by the lift
+ * probe). Still capped at the force the model was trained with. */
+function springForce(body, wp, target) {
+  const rt = sim.rt, m = sim.mass[body];
+  const kp = m * GRAB.omega ** 2;
+  const kd = 2 * GRAB.zeta * m * GRAB.omega;
+  const v = sim.state.linvel[body];
+  const f = [
+    kp * (target[0] - wp[0]) - kd * v[0],
+    kp * (target[1] - wp[1]) - kd * v[1],
+    kp * (target[2] - wp[2]) - kd * v[2] + m * rt.gravity];
+  const cap = rt.grab.force_cap * m * rt.gravity;
+  const fn = Math.hypot(...f);
+  if (fn > cap) for (let k = 0; k < 3; k++) f[k] *= cap / fn;
+  return f;
 }
 
 // ------------------------------------------------------------ physics loop
@@ -245,32 +317,34 @@ async function physicsLoop() {
   const rt = sim.rt;
   while (true) {
     if (loading || (dbg.paused && !dbg.stepOnce)) {
-      await new Promise((r) => setTimeout(r, 30)); continue;
+      await yieldSlice(30); continue;
     }
     dbg.stepOnce = false;
     const t0 = performance.now();
-    let act = [-1, null, null];
-    if (pendingPoke && pendingPoke.left > 0) {
-      act = [pendingPoke.body, pendingPoke.point, pendingPoke.force];
-      pendingPoke.left--;
+    let act = [-1, null, null], actInfo = null;
+    const poke = (pendingPoke && pendingPoke.left > 0) ? pendingPoke
+      : (dbg.scriptPoke && dbg.scriptPoke.left > 0) ? dbg.scriptPoke : null;
+    if (poke) {
+      act = [poke.body, poke.point, poke.force];
+      poke.left--;
+      actInfo = { kind: "poke", body: poke.body, force: poke.force };
     } else if (drag && performance.now() - drag.t0 >= POKE_MS) {
-      const b = drag.body;
-      const wp = worldGrabPoint(drag);
-      const m = sim.mass[b];
-      const kp = m * GRAB.omega ** 2;
-      const kd = 2 * GRAB.zeta * m * GRAB.omega;
-      const v = sim.state.linvel[b];
-      const f = [
-        kp * (drag.target.x - wp.x) - kd * v[0],
-        kp * (drag.target.y - wp.y) - kd * v[1],
-        kp * (drag.target.z - wp.z) - kd * v[2]];
-      const cap = rt.grab.force_cap * m * rt.gravity;
-      const fn = Math.hypot(...f);
-      if (fn > cap) for (let k = 0; k < 3; k++) f[k] *= cap / fn;
-      act = [b, wp.toArray(), f];
+      const wp = worldGrabPoint(drag).toArray();
+      const f = springForce(drag.body, wp, drag.target.toArray());
+      act = [drag.body, wp, f];
+      actInfo = { kind: "grab", body: drag.body, force: f, point: wp, target: drag.target.toArray() };
+    } else if (dbg.scriptDrag) {
+      const d = dbg.scriptDrag;
+      const R = sim.state.quat[d.body];
+      const wp = new THREE.Vector3(...d.local).applyQuaternion(new THREE.Quaternion(...R))
+        .add(new THREE.Vector3(...sim.state.pos[d.body])).toArray();
+      const f = springForce(d.body, wp, d.target);
+      act = [d.body, wp, f];
+      actInfo = { kind: "grab", body: d.body, force: f, point: wp, target: [...d.target], scripted: true };
     }
     try {
       await sim.step(...act);
+      diag?.record(actInfo);
       syncTransforms();
     } catch (e) {
       err(e);
@@ -282,7 +356,7 @@ async function physicsLoop() {
     // always yield a real slice to the renderer: the physics kernels share
     // the GPU with WebGL, and back-to-back steps starve the frame output
     const wait = Math.max(12, rt.dt * 1000 - stepMs);
-    await new Promise((res) => setTimeout(res, wait));
+    await yieldSlice(wait);
   }
   running = false;
 }
@@ -321,6 +395,7 @@ async function physicsLoop() {
     sel.value = first;
     await loadScene(first);
     physicsLoop();
+    initDiagPanel();
     setInterval(() => {
       const t = sim?.timing;
       const detail = t ? ` [${t.backend}: features ${t.features_ms.toFixed(0)} | graph ` +
@@ -332,6 +407,59 @@ async function physicsLoop() {
     }, 500);
   } catch (e) { err(e); }
 })();
+
+// ------------------------------------------------------- diagnostics panel
+// Live numbers for every body (press D or ?diag=1). The same data is
+// available programmatically via physsplat.diag; this is the human view.
+function initDiagPanel() {
+  const panel = $("diag");
+  if (!panel) return;
+  let open = Q.get("diag") === "1";
+  panel.hidden = !open;
+  addEventListener("keydown", (e) => {
+    if (e.key === "d" || e.key === "D") { open = !open; panel.hidden = !open; }
+  });
+  $("diag-copy").onclick = async () => {
+    try { await navigator.clipboard.writeText(diag.export({ last: 600 })); $("diag-copy").textContent = "copied"; }
+    catch (e) { $("diag-copy").textContent = "copy failed"; }
+    setTimeout(() => { $("diag-copy").textContent = "copy JSON (10 s)"; }, 1500);
+  };
+  $("diag-probe").onclick = async () => {
+    $("diag-probe").disabled = true; $("diag-probe").textContent = "running probes...";
+    try {
+      const r = await dbg.probe.all();
+      console.log("[physsplat] probe report", r);
+      $("diag-log").textContent = JSON.stringify(r, null, 1).slice(0, 4000);
+    } finally { $("diag-probe").disabled = false; $("diag-probe").textContent = "run probes"; }
+  };
+  const fmt = (x, d = 1) => (x == null ? "-" : (+x).toFixed(d));
+  setInterval(() => {
+    if (!open || !diag) return;
+    const s = diag.snapshot();
+    if (!s) return;
+    const rows = s.bodies.map((b) =>
+      `<tr><td>${b.id}</td><td>${fmt(b.mass_g)}</td><td>${fmt(b.height_mm)}</td>` +
+      `<td>${fmt(b.lowest_mm)}</td><td>${fmt(b.elevation_deg, 0)}</td>` +
+      `<td>${fmt(b.speed, 3)}</td><td>${fmt(b.angSpeed, 2)}</td>` +
+      `<td>${b.contacts.map((c) => `${c.other}(${fmt(c.gap_mm)})`).join(" ") || (b.groundContact ? "floor" : "none")}</td>` +
+      `<td>${fmt(b.penetration_mm)}</td><td>${b.resting ? b.restingSteps : "-"}</td>` +
+      `<td>${fmt(b.driftSinceRest_mm)}</td>` +
+      `<td>${b.guard ? fmt(b.guard.ground_mm + b.guard.capsule_mm, 2) : "-"}</td></tr>`).join("");
+    $("diag-table").innerHTML =
+      `<tr><th>id</th><th>g</th><th>z mm</th><th>low mm</th><th>elev</th><th>v m/s</th>` +
+      `<th>w r/s</th><th>contacts(gap mm)</th><th>pen mm</th><th>rest</th><th>drift</th><th>guard</th></tr>${rows}`;
+    const an = s.anomalies.length
+      ? s.anomalies.map((a) => `<span class="${a.severity}">${a.key} (${a.steps} steps): ${a.message}</span>`).join("<br>")
+      : `<span class="ok">no active anomalies</span>`;
+    const ev = diag.events(6).map((e) => `${e.t}s ${e.type}${e.key ? " " + e.key : ""}${e.body != null ? " b" + e.body : ""}`).join("<br>");
+    $("diag-anom").innerHTML = an;
+    $("diag-events").innerHTML = ev;
+    $("diag-totals").textContent =
+      `step ${s.step} t=${s.t}s | KE ${fmt(s.totals.KE_uJ, 2)} uJ | max pen ${fmt(s.totals.maxPenetration_mm)} mm | ` +
+      `floor pen ${fmt(s.totals.maxGroundPen_mm)} mm | resting ${s.totals.resting}/${s.bodies.length}` +
+      (s.action ? ` | action on ${s.action.body} (${fmt(s.action.force_N, 3)} N)` : "");
+  }, 250);
+}
 
 addEventListener("resize", () => {
   cam.aspect = innerWidth / innerHeight;

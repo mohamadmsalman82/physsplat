@@ -4,8 +4,8 @@
  * ONNX network, and integrates. Everything numeric comes from runtime.json.
  */
 import {
-  actionFeature, buildEdges, edgeFeatures, externalAccels, matVec,
-  quatToMatrix, stepBodies,
+  actionFeature, buildEdges, capsuleClosest, capsuleWorld, edgeFeatures,
+  externalAccels, quatToMatrix, stepBodies,
 } from "./physics.js";
 
 export class PhysSim {
@@ -45,12 +45,67 @@ export class PhysSim {
     this.quatHist = Array.from({ length: H }, () => bs.map((b) => [...b.quat]));
     this.bodyScalars = this.#bodyScalars();
     this.restCount = null;
+    this.stepCount = 0;
+    this.last = null;                 // per-step diagnostics (see #newLast)
     // Reconstructed poses overlap by up to ~1 cm (single-view depth error).
     // Resolve that before the first frame instead of letting the guards
     // jolt the pile apart in front of the viewer.
     if (this.groundGuard && bs.length) {
+      this.last = this.#newLast();
       for (let it = 0; it < 30; it++) { this.#capsuleGuard(); this.#groundGuard(); }
       this.state.linvel = bs.map(() => [0, 0, 0]);
+      this.loadCorrection = {                       // what the pre-settle moved
+        ground_mm: Array.from(this.last.guard.ground, (x) => x * 1e3),
+        capsule_mm: Array.from(this.last.guard.capsule, (x) => x * 1e3),
+      };
+      this.last = null;
+    }
+  }
+
+  /**
+   * Everything a step decided, kept for diagnostics: the model's residual
+   * accelerations (SI, after de-normalization), the analytic external
+   * accelerations, the action, and how much each guard intervened.
+   */
+  #newLast() {
+    const B = this.B;
+    return {
+      residual: new Float64Array(B * 6),
+      ext: { lin: new Float64Array(B * 3), ang: new Float64Array(B * 3) },
+      action: null,
+      guard: {
+        ground: new Float64Array(B),       // metres lifted out of the floor
+        capsule: new Float64Array(B),      // metres pushed out of other bodies
+        pairs: [],                         // {i, j, pen} overlaps corrected
+        settled: new Uint8Array(B),        // 1 if settle held the body still
+        freeFlight: new Uint8Array(B),     // 1 if the model residual was zeroed
+      },
+    };
+  }
+
+  /**
+   * Free-flight rule. A rigid body touching nothing feels only gravity and
+   * the applied force, both integrated analytically, so the learned
+   * residual must be zero for it. The network never saw a body hanging
+   * motionless in mid-air (training bodies at rest are always supported)
+   * and answers "+g, hold still" for one: a lifted pencil released from
+   * the cursor hovered forever (diagnostics probe, 53 mm above the floor).
+   * "Touching nothing" is read straight off the contact graph: no edge to
+   * another body's particle and no particle within the contact radius of
+   * the floor.
+   */
+  #freeFlight(parts, senders, receivers) {
+    const touched = new Uint8Array(this.B);
+    for (let e = 0; e < senders.length; e++) {
+      const bs = this.bodyIds[senders[e]], br = this.bodyIds[receivers[e]];
+      if (bs !== br) { touched[bs] = 1; touched[br] = 1; }
+    }
+    const rc = this.rt.contact_radius;
+    for (let i = 0; i < this.N; i++)
+      if (parts[3 * i + 2] < rc) touched[this.bodyIds[i]] = 1;
+    for (let b = 0; b < this.B; b++) if (!touched[b]) {
+      for (let k = 0; k < 6; k++) this.last.residual[6 * b + k] = 0;
+      this.last.guard.freeFlight[b] = 1;
     }
   }
 
@@ -98,6 +153,7 @@ export class PhysSim {
       }
       if (minz < 0) {
         this.state.pos[b][2] -= minz;
+        if (this.last) this.last.guard.ground[b] += -minz;
         if (this.state.linvel[b][2] < 0 && this.#lying(b)) this.state.linvel[b][2] = 0;
       }
     }
@@ -114,42 +170,24 @@ export class PhysSim {
   #capsuleGuard() {
     const bs = this.packet.bodies;
     if (!bs.length || !bs[0].capsule) return;
-    const seg = (b) => {
-      const R = quatToMatrix(this.state.quat[b]);
-      const a = matVec(R, bs[b].capsule.axis);
-      const h = bs[b].capsule.half, p = this.state.pos[b];
-      return { p, a, h, r: bs[b].capsule.radius };
-    };
-    const segs = bs.map((_, b) => seg(b));
+    const segs = bs.map((b, i) => capsuleWorld(this.state.pos[i], this.state.quat[i], b.capsule));
     for (let i = 0; i < this.B; i++) for (let j = i + 1; j < this.B; j++) {
-      const A = segs[i], Bc = segs[j];
-      // closest points between segments p +/- h*a (clamped, standard form)
-      const r = [A.p[0] - Bc.p[0], A.p[1] - Bc.p[1], A.p[2] - Bc.p[2]];
-      const dot = (u, v) => u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
-      const aa = dot(A.a, A.a), ee = dot(Bc.a, Bc.a), bb = dot(A.a, Bc.a);
-      const cc = dot(A.a, r), ff = dot(Bc.a, r);
-      const den = aa * ee - bb * bb;
-      let s = den > 1e-12 ? (bb * ff - cc * ee) / den : 0;
-      s = Math.max(-A.h, Math.min(A.h, s));
-      let t = (bb * s + ff) / ee;
-      t = Math.max(-Bc.h, Math.min(Bc.h, t));
-      s = Math.max(-A.h, Math.min(A.h, (bb * t - cc) / aa));
-      const ca = [A.p[0] + s * A.a[0], A.p[1] + s * A.a[1], A.p[2] + s * A.a[2]];
-      const cb = [Bc.p[0] + t * Bc.a[0], Bc.p[1] + t * Bc.a[1], Bc.p[2] + t * Bc.a[2]];
-      const d = [ca[0] - cb[0], ca[1] - cb[1], ca[2] - cb[2]];
-      const dist = Math.hypot(...d);
-      const pen = (A.r + Bc.r) - dist;
+      const { pen, dist, n } = capsuleClosest(segs[i], segs[j]);   // n: j -> i
       if (pen <= 0 || dist < 1e-9) continue;
-      const n = d.map((x) => x / dist);         // from j toward i
       const mi = this.mass[i], mj = this.mass[j];
       const wi = mj / (mi + mj), wj = mi / (mi + mj);
       for (let k = 0; k < 3; k++) {
         this.state.pos[i][k] += n[k] * pen * wi;
         this.state.pos[j][k] -= n[k] * pen * wj;
       }
+      if (this.last) {
+        this.last.guard.capsule[i] += pen * wi;
+        this.last.guard.capsule[j] += pen * wj;
+        this.last.guard.pairs.push({ i, j, pen });
+      }
       // cancel approaching relative velocity along the normal
       const vi = this.state.linvel[i], vj = this.state.linvel[j];
-      const vrel = dot([vi[0] - vj[0], vi[1] - vj[1], vi[2] - vj[2]], n);
+      const vrel = (vi[0] - vj[0]) * n[0] + (vi[1] - vj[1]) * n[1] + (vi[2] - vj[2]) * n[2];
       if (vrel < 0) for (let k = 0; k < 3; k++) {
         vi[k] -= n[k] * vrel * wi; vj[k] += n[k] * vrel * wj;
       }
@@ -157,21 +195,40 @@ export class PhysSim {
   }
 
   /**
-   * Settle damping (design doc: demo hygiene). A body that has been nearly
-   * at rest for a while gets its residual velocities zeroed, so the learned
-   * model's slow creep cannot accumulate on an untouched scene. Any real
-   * motion (a poke, a collision, a grab) immediately clears the counter.
+   * Settle (design doc: demo hygiene). A body that has been nearly at rest
+   * for a while is held exactly still: velocities zeroed AND the pose
+   * restored to what it was before this step. Zeroing velocity alone was
+   * not enough: the model's residual left a ~0.15 m/s^2 net sag, the
+   * capsule guard pushed the body back out along the contact normal, and
+   * that position-only push crept the pile sideways at ~2 mm/s with zero
+   * velocity (diagnostics: "creep", 9 mm in 4 s). Any real motion (a poke,
+   * a collision, a grab) clears the counter and the body moves again.
    */
-  #settle() {
+  #settle(prePos, preQuat, actBody) {
     this.restCount ??= new Int32Array(this.B);
+    const bs = this.packet.bodies;
+    // a body may settle only when something holds it up: the floor under a
+    // lying body, or another capsule within a contact gap. A body in the air
+    // stays with gravity (free-flight rule), and a pencil balanced on end
+    // (elevation > 45 deg) is left to the model so it can fall over.
+    const segs = bs.map((b, i) => capsuleWorld(this.state.pos[i], this.state.quat[i], b.capsule));
+    const supported = new Uint8Array(this.B);
+    for (let i = 0; i < this.B; i++) {
+      if (this.#lying(i)) supported[i] = 1;
+      for (let j = i + 1; j < this.B; j++)
+        if (capsuleClosest(segs[i], segs[j]).pen > -1.5e-3) { supported[i] = 1; supported[j] = 1; }
+    }
     for (let b = 0; b < this.B; b++) {
       const v = this.state.linvel[b], w = this.state.angvel[b];
-      // only a body lying on the floor can settle; a standing or lifted
-      // body must keep obeying gravity
-      const slow = this.#lying(b) && Math.hypot(...v) < 0.012 && Math.hypot(...w) < 0.35;
+      const standing = Math.abs(segs[b].a[2]) > 0.7071;
+      const slow = b !== actBody && supported[b] && !standing &&
+        Math.hypot(...v) < 0.012 && Math.hypot(...w) < 0.35;
       this.restCount[b] = slow ? this.restCount[b] + 1 : 0;
       if (this.restCount[b] >= 12) {
         v[0] = v[1] = v[2] = 0; w[0] = w[1] = w[2] = 0;
+        this.state.pos[b] = [...prePos[b]];
+        this.state.quat[b] = [...preQuat[b]];
+        if (this.last) this.last.guard.settled[b] = 1;
       }
     }
   }
@@ -216,6 +273,8 @@ export class PhysSim {
   async step(actBody = -1, actPoint = null, actForce = null) {
     const rt = this.rt, n = rt.normalize, H = rt.history;
     const T0 = performance.now();
+    this.last = this.#newLast();
+    if (actBody >= 0) this.last.action = { body: actBody, point: [...actPoint], force: [...actForce] };
     const parts = this.particlesWorld();
     const vels = Array.from({ length: H }, (_, h) => this.#particleVels(h));
 
@@ -326,7 +385,7 @@ export class PhysSim {
     this.timing = { features_ms: T1 - T0, graph_ms: T2 - T1, net_ms: T3 - T2,
       E: Ereal, N: this.N, backend: this.backend.kind };
 
-    const residual = new Float64Array(this.B * 6);
+    const residual = this.last.residual;
     for (let b = 0; b < this.B; b++)
       for (let k = 0; k < 6; k++)
         residual[6 * b + k] =
@@ -335,11 +394,21 @@ export class PhysSim {
     const ext = externalAccels(this.state.pos, this.state.quat, this.mass,
       this.inertia, actBody, actPoint ?? [0, 0, 0], actForce ?? [0, 0, 0],
       this.B);
+    this.last.ext = ext;
+    if (this.groundGuard) this.#freeFlight(parts, senders, receivers);
+    const prePos = this.state.pos.map((p) => [...p]);
+    const preQuat = this.state.quat.map((q) => [...q]);
     stepBodies(this.state, residual, ext, rt.dt, rt.gravity);
-    if (this.groundGuard) { this.#groundGuard(); this.#capsuleGuard(); this.#settle(); }
+    if (this.groundGuard) {
+      // capsules first: their push can move a body into the floor, and the
+      // floor is the hard constraint (diagnostics caught 1 mm "sinking"
+      // episodes from the reverse order)
+      this.#capsuleGuard(); this.#groundGuard(); this.#settle(prePos, preQuat, actBody);
+    }
     this.linHist.shift(); this.linHist.push(this.state.linvel.map((v) => [...v]));
     this.angHist.shift(); this.angHist.push(this.state.angvel.map((v) => [...v]));
     this.quatHist.shift(); this.quatHist.push(this.state.quat.map((q) => [...q]));
+    this.stepCount++;
     return this.state;
   }
 }

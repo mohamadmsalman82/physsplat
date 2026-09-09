@@ -18,6 +18,19 @@
     border-radius: 7px; padding: 6px 10px; margin: 6px 6px 0 0; cursor: pointer;
     font-size: 13px; }
   #err { color: #ff8080; white-space: pre-wrap; }
+  #diag { position: fixed; right: 14px; top: 14px; bottom: 14px; z-index: 2; width: 560px;
+          max-width: calc(100vw - 360px); overflow: auto; background: #181b21f2;
+          border: 1px solid #2a2f38; border-radius: 10px; padding: 10px 12px;
+          font: 11.5px/1.35 ui-monospace, Menlo, monospace; color: #c9d1d9; }
+  #diag h2 { margin: 0 0 6px; font-size: 13px; color: #8ec5ff; }
+  #diag table { border-collapse: collapse; width: 100%; margin: 6px 0; }
+  #diag th, #diag td { text-align: right; padding: 2px 5px; border-bottom: 1px solid #262b34;
+          font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #diag th { color: #7f8b99; font-weight: 600; }
+  #diag .warn { color: #ffcf6b; } #diag .error { color: #ff8080; } #diag .ok { color: #6ee7a8; }
+  #diag pre { white-space: pre-wrap; margin: 4px 0; color: #9aa5b1; max-height: 260px; overflow: auto; }
+  #diag button { margin: 4px 6px 4px 0; padding: 4px 8px; font-size: 11.5px; }
+  #diag small { color: #7f8b99; }
 </style>
 </head>
 <body>
@@ -31,6 +44,20 @@
   <button id="reset">reset</button>
   <p id="stats">loading model...</p>
   <p id="err"></p>
+  <p><small>press <b>D</b> for live diagnostics</small></p>
+</div>
+<div id="diag" hidden>
+  <h2>diagnostics <small>(physsplat.diag / physsplat.probe in the console; docs/diagnostics.md)</small></h2>
+  <div id="diag-totals">waiting for first step...</div>
+  <table id="diag-table"></table>
+  <div><b>anomalies</b></div><div id="diag-anom"></div>
+  <div style="margin-top:6px"><b>events</b></div><div id="diag-events"></div>
+  <div style="margin-top:6px">
+    <button id="diag-copy">copy JSON (10 s)</button>
+    <button id="diag-probe">run probes</button>
+    <small>probes: rest, lift, grab end, poke, pull bottom, drop (~1 min)</small>
+  </div>
+  <pre id="diag-log"></pre>
 </div>
 <!-- ort.webgpu bundle: includes the WebGPU backend (ort.min.js is wasm-only) -->
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.webgpu.min.js"></script>
