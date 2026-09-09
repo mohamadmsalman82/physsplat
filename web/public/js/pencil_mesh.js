@@ -106,40 +106,152 @@ export function buildPencil(body) {
   // Size from the physics particles, not from the capsule: `capsule.radius`
   // is their MEDIAN distance from the axis, so a barrel drawn at it floats
   // above the particle the ground rule is holding at the table.
-  let r = cap.radius, half = cap.half, gripR = r, gripAt = 0;
+  // a basis across the pencil, for measuring its cross-section
+  const e1 = new THREE.Vector3(1, 0, 0);
+  if (Math.abs(e1.dot(axis)) > 0.9) e1.set(0, 1, 0);
+  e1.sub(axis.clone().multiplyScalar(e1.dot(axis))).normalize();
+  const e2 = new THREE.Vector3().crossVectors(axis, e1);
+
+  let r = cap.radius, half = cap.half, gripR = r, centre = 0, tipAtLo = false;
+  let squash = 1, squashDir = 0, offP = 0, offQ = 0;
   if (body.offsets && body.offsets.length) {
     const BINS = 24;
-    let maxAlong = 0;
-    const along = [], radial = [];
+    const along = [], radial = [], pp = [], qq = [];
+    let lo = Infinity, hi = -Infinity;
     for (const o of body.offsets) {
       const a = o[0] * cx[0] + o[1] * cx[1] + o[2] * cx[2];
       along.push(a);
       radial.push(Math.hypot(o[0] - a * cx[0], o[1] - a * cx[1], o[2] - a * cx[2]));
-      if (Math.abs(a) > maxAlong) maxAlong = Math.abs(a);
+      pp.push(o[0] * e1.x + o[1] * e1.y + o[2] * e1.z);
+      qq.push(o[0] * e2.x + o[1] * e2.y + o[2] * e2.z);
+      if (a < lo) lo = a;
+      if (a > hi) hi = a;
     }
+    // The particles are offsets from the centre of MASS, and a pencil whose
+    // far end was occluded in the photo reconstructs asymmetrically about
+    // it: up to 9.3 mm off centre across these four scenes. Sizing the
+    // drawing by the longer half and centring it on the origin therefore
+    // overhung the short end by as much as 19 mm, which is drawn pencil
+    // sticking out of the simulated body and lands on the table when
+    // nothing is holding it. Span what the particles actually span.
+    centre = (lo + hi) / 2;
+    const span = Math.max(hi - lo, 0.02);
     const bin = new Float64Array(BINS);
     along.forEach((a, i) => {
-      const k = Math.min(BINS - 1, Math.max(0, Math.floor((a + maxAlong) / (2 * maxAlong) * BINS)));
+      const k = Math.min(BINS - 1, Math.max(0, Math.floor((a - lo) / span * BINS)));
       bin[k] = Math.max(bin[k], radial[i]);
     });
     gripR = Math.max(...bin);
     r = gripR / GRIP_OVER_BARREL;
-    gripAt = ([...bin].indexOf(gripR) + 0.5) / BINS * 2 * maxAlong - maxAlong;
-    half = Math.max(maxAlong - r, 0.01);
+    half = Math.max(span / 2 - r, 0.01);
+
+    // Which end is the point. A pencil's point end is the thin one, so
+    // compare the mean particle radius over the outer sixth at each end.
+    // The obvious alternative, putting the point on whichever side the
+    // fattest band (the grip) leans towards, reads a single lumpy particle
+    // and gets it backwards on a lumpy reconstruction: IMG_8504 body 2 came
+    // out with the blunt eraser drawn over the real pencil's tapered point,
+    // which is 7 mm of drawn pencil hanging outside the simulated body at
+    // the exact end a tilted pencil rests on.
+    let nLo = 0, sLo = 0, nHi = 0, sHi = 0;
+    const edge = span / 6;
+    along.forEach((a, i) => {
+      if (a < lo + edge) { nLo++; sLo += radial[i]; }
+      else if (a > hi - edge) { nHi++; sHi += radial[i]; }
+    });
+    tipAtLo = nLo && nHi ? (sLo / nLo) < (sHi / nHi) : false;
+
+    // A round pencil does not fit inside these reconstructions. Their
+    // cross-sections come back elliptical, roughly 1.4 to 1, so a circle
+    // drawn at the fattest particle reaches 1 to 2 mm past the cloud in the
+    // narrow direction, and since the ground rule holds the lowest PARTICLE,
+    // that is drawn pencil below the table. Measure the ellipse and squash
+    // the drawing onto it: at 1.4 to 1 across 9 mm the flattening is not
+    // visible, and it is the difference between a pencil that rests on the
+    // table and one that sinks into it.
+    let sp = 0, sq = 0, spq = 0;
+    for (let i = 0; i < pp.length; i++) { sp += pp[i] * pp[i]; sq += qq[i] * qq[i]; spq += pp[i] * qq[i]; }
+    squashDir = 0.5 * Math.atan2(2 * spq / pp.length, (sp - sq) / pp.length);
+    const c1 = Math.cos(squashDir), s1 = Math.sin(squashDir);
+    let loS = Infinity, hiS = -Infinity, loT = Infinity, hiT = -Infinity;
+    for (let i = 0; i < pp.length; i++) {
+      const s = pp[i] * c1 + qq[i] * s1, t = -pp[i] * s1 + qq[i] * c1;
+      if (s < loS) loS = s; if (s > hiS) hiS = s;
+      if (t < loT) loT = t; if (t > hiT) hiT = t;
+    }
+    const halfS = (hiS - loS) / 2, halfT = (hiT - loT) / 2;
+    const major = Math.max(halfS, halfT);
+    if (major > 1e-5) {
+      // draw at the major half-width and flatten the minor one onto the hull
+      gripR = major;
+      r = gripR / GRIP_OVER_BARREL;
+      const minor = Math.min(halfS, halfT);
+      squash = minor / major;
+      // squashDir must point along the NARROW axis, the one being compressed
+      if (halfT < halfS) squashDir += Math.PI / 2;
+      // the cross-section is not centred on the axis either
+      const cs = (loS + hiS) / 2, ct = (loT + hiT) / 2;
+      offP = cs * c1 - ct * s1;
+      offQ = cs * s1 + ct * c1;
+
+      // The silhouette is not actually an ellipse, so the ellipse through
+      // its extremes still pokes out of it in between, by about a
+      // millimetre. Shrink the drawn section about its own centre until it
+      // is inside the silhouette in every direction across the pencil.
+      // This is the last millimetre of the sinking report, and it is worth
+      // the 360 dot products once per body at load.
+      const cd = Math.cos(squashDir), sd = Math.sin(squashDir);
+      let f = 1;
+      for (let k = 0; k < 360; k++) {
+        const th = k * Math.PI / 180, np = Math.cos(th), nq = Math.sin(th);
+        let cloud = -Infinity;
+        for (let i = 0; i < pp.length; i++) {
+          const v = np * pp[i] + nq * qq[i];
+          if (v > cloud) cloud = v;
+        }
+        // support of the drawn ellipse about its centre, per unit scale
+        const rad = Math.hypot(minor * (np * cd + nq * sd), major * (-np * sd + nq * cd));
+        if (rad > 1e-9) f = Math.min(f, (cloud - (np * offP + nq * offQ)) / rad);
+      }
+      gripR = major * Math.min(1, Math.max(0.3, f));
+      r = gripR / GRIP_OVER_BARREL;
+    }
   }
   const L = 2 * half + 2 * r;
   const colour = barrelColour(body.render_colors);
 
-  // Which end is the point: the grip sits nearer it, so whichever end the
-  // fattest band leans towards is the business end.
-  const tipSign = gripAt >= 0 ? 1 : -1;
+  // parts are built with the point at +y, so turn +y onto whichever end of
+  // the axis the particles say is the thin one
+  const tipSign = tipAtLo ? -1 : 1;
 
   const g = new THREE.Group();
   const frame = new THREE.Quaternion().setFromUnitVectors(
     new THREE.Vector3(0, 1, 0), axis.clone().multiplyScalar(tipSign));
   const mat = (extra = {}) => new THREE.MeshStandardMaterial({
     vertexColors: true, roughness: 0.42, metalness: 0.0, ...extra });
-  const add = (geo, m) => g.add(new THREE.Mesh(geo, m));
+
+  // One transform takes a part from the frame it is built in (along +y,
+  // round, centred on the origin) to where the physics body actually is:
+  //   translate onto the particle cloud's centre, which is off the body
+  //   origin both along the pencil and across it;
+  //   squash across the narrow axis of the cloud's elliptical section;
+  //   turn +y onto the pencil's axis.
+  // Baked into the geometry rather than hung on the scene graph, so the
+  // squash composes with the axis rotation in the right order and the
+  // renderer still drives one clean group transform.
+  const nd = e1.clone().multiplyScalar(Math.cos(squashDir))
+    .add(e2.clone().multiplyScalar(Math.sin(squashDir)));
+  const Rd = new THREE.Matrix4().makeBasis(nd, axis, new THREE.Vector3().crossVectors(nd, axis));
+  const M = new THREE.Matrix4()
+    .makeTranslation(
+      centre * axis.x + offP * e1.x + offQ * e2.x,
+      centre * axis.y + offP * e1.y + offQ * e2.y,
+      centre * axis.z + offP * e1.z + offQ * e2.z)
+    .multiply(Rd)
+    .multiply(new THREE.Matrix4().makeScale(squash, 1, 1))
+    .multiply(Rd.clone().transpose())
+    .multiply(new THREE.Matrix4().makeRotationFromQuaternion(frame));
+  const add = (geo, m) => g.add(new THREE.Mesh(geo.applyMatrix4(M), m));
 
   // y runs from the eraser end (-L/2) to the point (+L/2)
   const top = -L / 2, tip = L / 2;
@@ -208,7 +320,6 @@ export function buildPencil(body) {
   bridge.translate(0, clipY - clipLen / 2, r * 0.9);
   add(solid(bridge, CLIP_GREY), mat({ roughness: 0.45 }));
 
-  g.quaternion.copy(frame);
   g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
   const outer = new THREE.Group();   // the renderer drives this one's pose
   outer.add(g);

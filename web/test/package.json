@@ -10,7 +10,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "onnxruntime-node": "^1.29.0"
+    "onnxruntime-node": "^1.29.0",
+    "three": "^0.186.0"
   },
   "type": "module"
 }
