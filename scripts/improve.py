@@ -65,6 +65,14 @@ CANDIDATES = [
      "same, twice the iterations"),
     ("mixed_k12", "rollout", {"K": 12, "lr": 3e-6},
      "generic rollout pass after rest tuning: guard interaction quality"),
+    # --- round 4: the demo runs the analytic invariants (free flight, no
+    # free energy). With --rules they are on during BOTH fine-tuning and
+    # evaluation, so the model is trained against the residual it is
+    # actually allowed to produce, and the whole run stays comparable.
+    ("rest_k24_rules", "rollout", {"K": 24, "lr": 3e-6, "rest_only": True},
+     "rest windows under the invariants: learn the residual the rules allow"),
+    ("mixed_k12_rules", "rollout", {"K": 12, "lr": 3e-6},
+     "generic rollout under the invariants"),
 ]
 
 
@@ -112,7 +120,15 @@ def main():
                          "(continuing from an accepted experiment)")
     ap.add_argument("--candidates", default=None,
                     help="comma-separated candidate names to run, in order")
+    ap.add_argument("--rules", action="store_true",
+                    help="run fine-tuning AND evaluation with the analytic "
+                         "invariants the demo uses (free flight, no free "
+                         "energy); baseline included, so the run is comparable")
     args = ap.parse_args()
+    if args.rules:
+        from physsplat.model.live import LiveSim
+        LiveSim.DEFAULT_FREE_FLIGHT = True
+        LiveSim.DEFAULT_ENERGY_RULE = True
     global CANDIDATES
     if args.candidates:
         want = args.candidates.split(",")
