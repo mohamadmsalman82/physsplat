@@ -256,9 +256,14 @@ export class Diagnostics {
       if (b.elevation_deg > 45 && b.stepsSinceAction > 30 && b.rotSinceRest_deg === 0 && b.angSpeed > 0.5 && b.lowest < 3e-3)
         add("rearing", id, "error", b.elevation_deg,
           `body ${id} is rotating upward on its own (${b.elevation_deg.toFixed(0)} deg, ${b.angSpeed.toFixed(1)} rad/s) with no action`, { body: id });
-      else if (b.elevation_deg > 4 && b.lowest < 3e-3 && !b.contacts.length && b.restingSteps >= 30)
+      // tilted, and held up at one place only: a pencil cannot rest like
+      // that. Support spread is what makes it "one place": a tapered
+      // pencil lying along the floor reads a few degrees of tilt with its
+      // support spread over most of its length, and that is a real pose.
+      else if (b.elevation_deg > 4 && b.support.n && b.support.spread_mm < 30 &&
+               b.lowest < 3e-3 && b.slowSteps >= 30)
         add("tilt_hold", id, "error", b.elevation_deg,
-          `body ${id} rests tilted ${b.elevation_deg.toFixed(1)} deg with one end on the floor and nothing under the other`, { body: id });
+          `body ${id} rests tilted ${b.elevation_deg.toFixed(1)} deg on a ${b.support.spread_mm.toFixed(0)} mm support`, { body: id });
       if (b.support.n && !b.support.balanced && b.restingSteps >= 30 && b.stepsSinceAction > 30)
         add("unbalanced_rest", id, "error", b.support.dist_mm,
           `body ${id} rests with its centre of mass ${b.support.dist_mm.toFixed(1)} mm outside its support (${b.support.n} contact points, spread ${b.support.spread_mm.toFixed(0)} mm)`, { body: id });
