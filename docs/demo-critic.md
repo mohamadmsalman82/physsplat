@@ -95,6 +95,15 @@ the 0.82 vs 0.96 m/s impact speed (contact begins a little early). All
 three point at the contact residual on reconstructed pencils and are the
 candidates for a fine-tuning round with photo-packet geometry.
 
+The free-flight rule was also scored on the synthetic test set
+(`scripts/evaluate.py --free-flight`, ledger id `final_v2_freeflight`):
+composite 62.3 against 61.0 without it. Translation error at 150 steps
+0.0205 m vs 0.0220, support-removal Jaccard 0.60 vs 0.50, but ground
+penetration 1.04 mm vs 0.38 mm and post-action error 0.29 vs 0.20: bodies
+now reach the floor at the true speed, and the model's landing response
+is softer than PyBullet's. The rule is honest physics, so it stays; the
+landing response is the model's problem to fix, not the rule's.
+
 ## Round 3
 
 Pending: a fresh blind tester with the diagnostics API in its brief.
