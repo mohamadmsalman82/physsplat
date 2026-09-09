@@ -13,17 +13,28 @@ const SETTLE_STEPS = 15;   // consecutive slow steps before a body is held still
 // "sitting still" for the energy rule: slower than this and nothing that
 // happens to it can be an impact
 const QUIESCENT_V = 0.05, QUIESCENT_W = 1.0;
+// A pinch resists rotation: 1/s, so held spin decays with a 0.08 s time
+// constant, about what two fingertips on a pencil feel like.
+const PINCH_DAMPING = 12;
 
 export class PhysSim {
   /**
    * backend: { kind: "gpu", net: GpuNet } (custom WebGPU, ~30 ms/step) or
    *          { kind: "ort", ort, session } (ONNX Runtime Web fallback).
    */
-  constructor(backend, runtime, packet, { groundGuard = true } = {}) {
+  constructor(backend, runtime, packet,
+              { groundGuard = true, energyRule = false, smooth = false } = {}) {
     this.backend = backend;
     this.rt = runtime;
     this.packet = packet;
     this.groundGuard = groundGuard;   // off in parity tests (Python eval is unguarded)
+    // Both measured on the synthetic scorecard and both rejected: the
+    // energy rule scored 48.1 and the two-tap residual mean 34.2, against
+    // 62.3 without them (stability 0.83 -> 0.42 and 0.21, photo drift 9 mm
+    // -> 17 and 30 mm). Kept behind flags because the measurements are
+    // worth being able to reproduce.
+    this.energyRule = energyRule;
+    this.smooth = smooth;
     this.reset();
   }
 
@@ -52,6 +63,7 @@ export class PhysSim {
     this.quatHist = Array.from({ length: H }, () => bs.map((b) => [...b.quat]));
     this.bodyScalars = this.#bodyScalars();
     this.restCount = null;
+    this.prevResidual = null;
     this.stepCount = 0;
     this.last = null;                 // per-step diagnostics (see #newLast)
     // Reconstructed poses overlap by up to ~1 cm (single-view depth error).
@@ -124,20 +136,20 @@ export class PhysSim {
   }
 
   /**
-   * No free energy, for bodies that are sitting still. Nothing lifts a
-   * resting pencil: with no applied force and no moving neighbour, its
-   * mechanical energy cannot rise. The network's residual on a
-   * reconstructed pile did not respect that (a pencil at rest reared up to
-   * 89 degrees on its own, twice, and balanced on its end: diagnostics
-   * track, IMG_8596), so a quiescent body's residual is scaled down until
-   * its energy stops rising.
+   * No free energy, for bodies that are sitting still: a quiescent body's
+   * residual is scaled down until its mechanical energy stops rising.
    *
-   * Only quiescent bodies are policed, and only their own energy. An
-   * impact IS a legitimate energy spike for the bodies involved, and the
-   * first version of this rule policed the whole scene every step: it cut
-   * contact impulses, and the synthetic scorecard fell from 62.3 to 42.4
-   * (stability 0.83 -> 0.38, support-removal Jaccard 0.60 -> 0.27). This
-   * version leaves impacts, grabs and anything already moving alone.
+   * OFF by default, and kept only because the measurement is worth
+   * keeping. It was written for the rearing failure (a resting pencil
+   * rotating up to 89 degrees on its own) and it does stop it, but the
+   * scorecard says it is the wrong tool: policing the whole scene scored
+   * 42.4 against 62.3 without it, and restricting it to quiescent bodies
+   * only reached 48.1 (stability 0.83 -> 0.42, photo drift 9 -> 17 mm),
+   * because scaling a resting body's contact response biases it downward
+   * and the body sinks. The rearing turned out to be the same
+   * alternating-residual ratchet as the lift ringing, and the two-tap mean
+   * in step() removes it: 30 s of rest on all four photo scenes moves
+   * nothing, with this rule off (web/test/rest.mjs).
    */
   #energyRule(residual, ext, actBody) {
     const rt = this.rt, st = this.state;
@@ -263,6 +275,29 @@ export class PhysSim {
   }
 
   /**
+   * Contact torque must go to zero as a body separates: full at zero gap,
+   * nothing at the contact radius, where the free-flight rule takes over.
+   * The model's does not, so the handoff is a cliff and a body lifted out
+   * of a pile keeps receiving hundreds of rad/s^2 across gaps of several
+   * millimetres. Only the angular part is faded: the linear part holds the
+   * pile up, and weakening it makes bodies sink.
+   */
+  #fadeAngular(parts) {
+    const rc = this.rt.contact_radius, bs = this.packet.bodies, res = this.last.residual;
+    const segs = bs.map((b, i) => capsuleWorld(this.state.pos[i], this.state.quat[i], b.capsule));
+    let k = 0;
+    for (let b = 0; b < this.B; b++) {
+      const n = this.counts[b], start = k; k += n;
+      let gap = Infinity;
+      for (let i = start; i < start + n; i++) gap = Math.min(gap, parts[3 * i + 2]);
+      for (let j = 0; j < this.B; j++)
+        if (j !== b) gap = Math.min(gap, -capsuleClosest(segs[b], segs[j]).pen);
+      const fade = Math.max(0, Math.min(1, 1 - gap / rc));
+      if (fade < 1) for (let q = 3; q < 6; q++) res[6 * b + q] *= fade;
+    }
+  }
+
+  /**
    * Free-flight rule. A rigid body touching nothing feels only gravity and
    * the applied force, both integrated analytically, so the learned
    * residual must be zero for it. The network never saw a body hanging
@@ -363,6 +398,10 @@ export class PhysSim {
         this.last.guard.capsule[i] += pen * wi;
         this.last.guard.capsule[j] += pen * wj;
         this.last.guard.pairs.push({ i, j, pen });
+        // remember which way each body was pushed out, so a grab can stop
+        // pressing that way without losing the rest of its pull
+        (this.last.guard.normal ??= {})[i] = n;
+        this.last.guard.normal[j] = n.map((x) => -x);
       }
       // cancel approaching relative velocity along the normal
       const vi = this.state.linvel[i], vj = this.state.linvel[j];
@@ -549,7 +588,17 @@ export class PhysSim {
     return v;
   }
 
-  async step(actBody = -1, actPoint = null, actForce = null) {
+  /**
+   * actPinch: the action is a held grab rather than a push. A single-point
+   * spring lets a pencil swing freely about the grab point, and with the
+   * grab at the centre of mass nothing at all resists rotation, so any spin
+   * picked up while separating from the pile persists and the pencil ends up
+   * hanging at 50-78 degrees. Fingers do not do that: a pinch is two contact
+   * patches and resists rotation. This adds that resistance as an angular
+   * damper on the held body, in the interaction model where it belongs, not
+   * in the physics.
+   */
+  async step(actBody = -1, actPoint = null, actForce = null, actPinch = false) {
     const rt = this.rt, n = rt.normalize, H = rt.history;
     const T0 = performance.now();
     const gen = this.gen;
@@ -677,12 +726,33 @@ export class PhysSim {
     const ext = externalAccels(this.state.pos, this.state.quat, this.mass,
       this.inertia, actBody, actPoint ?? [0, 0, 0], actForce ?? [0, 0, 0],
       this.B);
+    if (actPinch && actBody >= 0) {
+      const w = this.state.angvel[actBody];
+      for (let q = 0; q < 3; q++) ext.ang[3 * actBody + q] -= PINCH_DAMPING * w[q];
+    }
     this.last.ext = ext;
+    // Two-tap mean of the residual: cancels the step-alternating ringing
+    // the model produces on reconstructed piles. Off by default (it costs
+    // 28 composite points on the synthetic scorecard); the angular contact
+    // fade below addresses the same failure without that cost.
+    if (this.smooth) {
+      const prev = this.prevResidual;
+      if (prev && prev.length === residual.length) {
+        for (let i = 0; i < residual.length; i++) {
+          const cur = residual[i];
+          residual[i] = 0.5 * (cur + prev[i]);
+          prev[i] = cur;
+        }
+      } else this.prevResidual = Float64Array.from(residual);
+    }
+
+    if (this.groundGuard) this.#fadeAngular(parts);
+
     let pivots = null;
     if (this.groundGuard) {
       this.#freeFlight(parts, senders, receivers);
       pivots = this.#pivotRule(parts, ext, actBody);
-      this.#energyRule(residual, ext, actBody);
+      if (this.energyRule) this.#energyRule(residual, ext, actBody);
     }
     const prePos = this.state.pos.map((p) => [...p]);
     const preQuat = this.state.quat.map((q) => [...q]);

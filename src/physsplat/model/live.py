@@ -26,11 +26,12 @@ class LiveSim:
     # ways). Both are physics, not cleanup: they say what the residual is
     # not allowed to claim, and the demo runs with them on.
     DEFAULT_FREE_FLIGHT = False
-    DEFAULT_ENERGY_RULE = False
+    DEFAULT_ENERGY_RULE = False    # measured and rejected; see _limit_energy
+    DEFAULT_SMOOTH = False
 
     def __init__(self, model, normalizer, scene: dict, init: dict, device="cpu",
                  ground_guard: bool = False, free_flight: bool | None = None,
-                 energy_rule: bool | None = None):
+                 energy_rule: bool | None = None, smooth: bool | None = None):
         """scene: offsets_list, mass, inertia (numpy).
         init: pos/quat/linvel/angvel, each (HISTORY, B, ...) numpy warmup.
         ground_guard: analytic non-penetration cleanup for demos (lift a body
@@ -46,6 +47,8 @@ class LiveSim:
                             else free_flight)
         self.energy_rule = (LiveSim.DEFAULT_ENERGY_RULE if energy_rule is None
                             else energy_rule)
+        self.smooth = LiveSim.DEFAULT_SMOOTH if smooth is None else smooth
+        self.prev_residual = None
         B = self.B = len(scene["mass"])
         self.offsets = [torch.tensor(o, dtype=torch.float32, device=device)
                         for o in scene["offsets_list"]]
@@ -219,6 +222,18 @@ class LiveSim:
             if not touched.all():
                 keep = torch.tensor(touched, device=self.device).float()[:, None]
                 residual = residual * keep
+
+        if self.smooth:
+            # Contact forces do not reverse every step. This one does: on a
+            # reconstructed pile the angular residual alternated sign at
+            # +/-600 rad/s^2 during a lift, and the rectified remainder
+            # ratcheted a pencil grabbed at its centre (zero applied torque)
+            # to 55 degrees of tilt. A two-tap mean cancels a
+            # step-alternating signal exactly and leaves a steady one alone.
+            prev = self.prev_residual
+            self.prev_residual = residual
+            if prev is not None and prev.shape == residual.shape:
+                residual = 0.5 * (residual + prev)
 
         if self.energy_rule:
             residual = self._limit_energy(residual, act_body, pt, fc)

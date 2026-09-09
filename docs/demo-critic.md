@@ -241,6 +241,86 @@ a tapered pencil lying flat, because it tested for missing capsule
 contacts within 3 mm rather than for what it meant. It now asks whether
 the body is tilted and held up over less than 30 mm.
 
+### The tester's report
+
+| Visuals | Physics | Interaction | Robustness | Overall |
+|---|---|---|---|---|
+| 6 | 3 | 3 | 6 | 3 |
+
+Zero console errors across eight scene switches, three probe suites and
+dozens of drags; reset bit-exact. The physics and interaction scores came
+from measurements worth keeping:
+
+1. **A pencil frozen in an impossible pose**: tilted 6.2 degrees, one end
+   on the floor, the other unsupported, held 3867 steps. Settle latched a
+   pose that is not an equilibrium.
+2. **A pencil resting 11.6 mm up touching nothing**, with no anomaly
+   raised, because the detector asked about 3 mm contacts while the body
+   had 6 mm support.
+3. **Contact resolved in position, not velocity**: 5.7 and 10.5 mm of
+   movement in a step whose reported velocity was 11-45 mm/s, impact
+   0.025 m/s against 0.356 analytic, and never a bounce.
+4. **Impulses clamped and then destroyed**: 0.3 m/s applied, 0.13 m/s
+   peak, with a spurious 24-27 rad/s spin out of a purely linear poke.
+5. **A centre lift reared the pencil to 87 degrees** and it never left the
+   floor.
+6. **Grab steady-state error 8-13.6 mm** after the cursor stopped moving.
+7. **A stationary click produced a 0.15 m/s flick**; four of them
+   restacked the pile.
+8. **Playback speed 0.32x to 1.22x real time** depending on GPU load.
+
+One of its ten was a misreading worth recording: the "collision shell is
+2.200x the drawn pencil" measurement is of `physsplat.proxies`, the
+invisible ray-pick volumes, which are deliberately 2.2x so a pencil can be
+grabbed without pixel precision. The collision capsules the guards use are
+the fitted 4.5 mm radius, the same as the drawn barrel.
+
+### What changed, and what the measurements said
+
+Two rules written earlier in this round were **measured and rejected**:
+
+| | composite | stability | photo drift |
+|---|---|---|---|
+| free flight only | 62.3 | 0.83 | 9 mm |
+| + no-free-energy (whole scene) | 42.4 | 0.38 | 18 mm |
+| + no-free-energy (quiescent bodies only) | 48.1 | 0.42 | 17 mm |
+| + two-tap residual mean | 34.2 | 0.21 | 30 mm |
+
+Both are off by default now, kept behind flags so the numbers can be
+reproduced. What replaced them:
+
+- **Angular contact fade.** Contact torque must vanish as a body
+  separates; the model's does not, so lifting a pencil out of a pile it
+  kept applying hundreds of rad/s^2 across millimetres of gap. The angular
+  residual now fades linearly to zero at the contact radius, where free
+  flight takes over. The linear part is untouched: it holds the pile up.
+- **A pinch, not a point.** A single-point spring at the centre of mass
+  resists no rotation at all, so any spin picked up while separating
+  persisted and the pencil hung at 50-78 degrees. A held body now gets
+  angular damping, in the interaction model rather than the physics.
+- **A grab blocked by a neighbour** loses only the component pressing into
+  it, not two thirds of the whole force, which had made a wedged pencil
+  impossible to lift.
+- **Flicks need 6 mm of travel**, so a click is a click.
+- **The loop never runs faster than real time** and resynchronises after a
+  stall, instead of replaying at up to 1.22x.
+- Shadow map doubled with a normal bias (the dark bands across barrels
+  were shadow acne), and the ground reads as a table rather than a void.
+
+### Regression tests, so this is not re-argued by eye
+
+`web/test/rest.mjs` and `web/test/interact.mjs` drive the browser
+simulator headlessly. Rest: all four scenes still to within 0.4 degrees
+and 0.2 mm over 20 seconds, against 29-32 degrees of tilt and 56-60 mm of
+sinking for the model with the rules off. Interaction, per scene: drop at
+1.00 g, grab tracking 0.0 mm, lift off the pile, release and land, support
+removal, no interpenetration over 1 mm.
+
+**Known limitation.** IMG_8626, a tight five-pencil pile where every body
+touches four others, still fails three of those: the grabbed pencil cannot
+be prised out, ends at 71 degrees, and pulling the bottom one out does not
+drop what it carried. The other three scenes pass in full.
+
 ## Round 5
 
 Pending.

@@ -39,7 +39,10 @@ const names = readdirSync(`${root}web/public/packets`)
 
 for (const file of names) {
   const packet = JSON.parse(readFileSync(`${root}web/public/packets/${file}`));
-  const sim = new PhysSim({ kind: "ort", ort, session }, runtime, packet);  // guards on
+  // guards on as the demo runs them; the two rejected filters stay off
+  // unless REST_ENERGY / REST_SMOOTH ask for them
+  const sim = new PhysSim({ kind: "ort", ort, session }, runtime, packet,
+    { energyRule: process.env.REST_ENERGY === "1", smooth: process.env.REST_SMOOTH === "1" });
   // the page hides the first steps while the reconstruction settles
   for (let k = 0; k < 45; k++) await sim.step();
   const p0 = sim.state.pos.map((p) => [...p]);

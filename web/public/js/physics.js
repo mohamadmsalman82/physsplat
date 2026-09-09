@@ -311,6 +311,38 @@ export function supportAnalysis(com, points, tol = 6e-3) {
   return { n: points.length, balanced: dist <= tol, dist, spread, hinge: nearest };
 }
 
+// ------------------------------------------------------------------ grabs
+
+/**
+ * Spring-damper grab force pulling the grab point `wp` toward `target`,
+ * with gravity feed-forward so a held body sits at the cursor instead of
+ * sagging g/omega^2 below it. Capped at the force the model was trained
+ * with, and cut while a guard is pushing the held body out of another (at
+ * the full cap the spring drove it ~9 mm into the neighbour every step).
+ * Shared by the demo's pointer path and the headless interaction tests.
+ */
+export function grabForce({ m, v, wp, target, omega, zeta, gravity, capG, blocked = false }) {
+  const kp = m * omega * omega, kd = 2 * zeta * m * omega;
+  const f = [
+    kp * (target[0] - wp[0]) - kd * v[0],
+    kp * (target[1] - wp[1]) - kd * v[1],
+    kp * (target[2] - wp[2]) - kd * v[2] + m * gravity];
+  // `blocked` used to cut the whole force to a third while a guard was
+  // separating the held body, which also meant a wedged pencil could not
+  // be lifted out of a pile at all (it never rose, and rotated to 77
+  // degrees instead). Only the component pushing further into the
+  // obstruction is cut; the rest of the grab still works.
+  const cap = capG * m * gravity;
+  if (Array.isArray(blocked)) {
+    const n = blocked;                       // unit normal out of the obstruction
+    const into = f[0] * n[0] + f[1] * n[1] + f[2] * n[2];
+    if (into < 0) for (let k = 0; k < 3; k++) f[k] -= 0.66 * into * n[k];
+  }
+  const fn = Math.hypot(f[0], f[1], f[2]);
+  if (fn > cap) for (let k = 0; k < 3; k++) f[k] *= cap / fn;
+  return f;
+}
+
 // ---------------------------------------------------------------- features
 
 export function actionFeature(parts, sel, point, force, mass, sigma) {

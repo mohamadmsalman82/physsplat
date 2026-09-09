@@ -7,6 +7,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { PhysSim } from "./sim.js";
 import { Diagnostics, Probes } from "./diag.js";
 import { buildPencil } from "./pencil_mesh.js";
+import { grabForce } from "./physics.js";
 
 const $ = (id) => document.getElementById(id);
 const err = (m) => { $("err").textContent = String(m); console.error(m); };
@@ -40,15 +41,19 @@ scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x2a2622, 0.5));
 const sun = new THREE.DirectionalLight(0xffffff, 1.6);
 sun.position.set(0.35, -0.45, 0.9);
 sun.castShadow = true;
-sun.shadow.mapSize.set(1024, 1024);
+sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.near = 0.1; sun.shadow.camera.far = 3;
 sun.shadow.camera.left = sun.shadow.camera.bottom = -0.4;
 sun.shadow.camera.right = sun.shadow.camera.top = 0.4;
-sun.shadow.bias = -0.0005;
+// curved surfaces an ellipse apart in depth were self-shadowing into dark
+// bands across the barrels; normalBias offsets along the normal, which is
+// what round geometry needs
+sun.shadow.bias = -0.0002;
+sun.shadow.normalBias = 0.02;
 scene.add(sun);
 const ground = new THREE.Mesh(
   new THREE.CircleGeometry(0.6, 64),
-  new THREE.MeshStandardMaterial({ color: 0x2c3038, roughness: 0.92 }));
+  new THREE.MeshStandardMaterial({ color: 0x3a3226, roughness: 0.85, metalness: 0 }));
 ground.receiveShadow = true;
 scene.add(ground);
 const grid = new THREE.GridHelper(1, 40, 0x2a2f38, 0x20242c);
@@ -294,10 +299,17 @@ function startFlick(body, local, dir, speed, distance) {
 let flick = null;
 dbg.flick = (body, local, dir, speed, distance) => startFlick(body, local, dir, speed, distance);
 
+const FLICK_MIN_TRAVEL = 0.006;   // 6 mm: below this a click is a click
+
 renderer.domElement.addEventListener("pointerup", () => {
-  if (drag && drag.moved && performance.now() - drag.t0 < POKE_MS) {
+  const delta = drag ? drag.target.clone().sub(drag.p0) : null;
+  // A click that wobbles a pixel is not a flick. Without a travel floor,
+  // a stationary click produced a 0.15-0.17 m/s flick (a blind tester
+  // restacked a whole pile with four clicks), because any pointermove at
+  // all set `moved` and the speed came out of a near-zero interval.
+  if (drag && drag.moved && delta.length() > FLICK_MIN_TRAVEL &&
+      performance.now() - drag.t0 < POKE_MS) {
     const held = Math.max(0.05, (performance.now() - drag.t0) / 1000);
-    const delta = drag.target.clone().sub(drag.p0);
     startFlick(drag.body, drag.local.toArray(), delta.toArray(), delta.length() / held * 1.5,
       Math.max(0.03, delta.length() * 2));
   } else if (drag) {
@@ -328,31 +340,21 @@ function worldGrabPoint(d) {
     .add(proxies[d.body].position);
 }
 
-/** Spring-damper grab force toward `target` for the grab point `wp`
- * (arrays), with gravity feed-forward so a held pencil sits at the cursor
- * instead of sagging g/omega^2 = 12.5 mm below it (measured by the lift
- * probe). Capped at the force the model was trained with, and cut to a
- * third while the capsule guard is pushing the held body out of another:
- * at 3 m g the spring drove a held pencil 9 mm into its neighbour every
- * step and the guard shoved it back (blind test round 3). */
+/** The demo's grab: js/physics.js grabForce with this scene's constants. */
 function springForce(body, wp, target) {
-  const rt = sim.rt, m = sim.mass[body];
-  const kp = m * GRAB.omega ** 2;
-  const kd = 2 * GRAB.zeta * m * GRAB.omega;
-  const v = sim.state.linvel[body];
-  const f = [
-    kp * (target[0] - wp[0]) - kd * v[0],
-    kp * (target[1] - wp[1]) - kd * v[1],
-    kp * (target[2] - wp[2]) - kd * v[2] + m * rt.gravity];
-  const blocked = (sim.last?.guard.capsule[body] ?? 0) > 1e-3;
-  const cap = rt.grab.force_cap * m * rt.gravity * (blocked ? 0.34 : 1);
-  const fn = Math.hypot(...f);
-  if (fn > cap) for (let k = 0; k < 3; k++) f[k] *= cap / fn;
-  return f;
+  const rt = sim.rt;
+  return grabForce({
+    m: sim.mass[body], v: sim.state.linvel[body], wp, target,
+    omega: GRAB.omega, zeta: GRAB.zeta, gravity: rt.gravity,
+    capG: rt.grab.force_cap,
+    blocked: (sim.last?.guard.capsule[body] ?? 0) > 1e-3
+      ? sim.last.guard.normal?.[body] : false,
+  });
 }
 
 // ------------------------------------------------------------ physics loop
 let pendingPoke = null, stepMs = 0, running = false, lastStepAt = performance.now();
+let simClock = 0, clockStart = performance.now();
 
 async function physicsLoop() {
   if (running) return;
@@ -413,9 +415,18 @@ async function physicsLoop() {
     lastStepAt = performance.now();
     $("err").textContent = "";                    // a completed step clears a stale error
     stateDt = Math.max(rt.dt, stepMs / 1000);   // interpolation window
+    // Never run faster than real time. The timestep is a fixed 1/60 s, so
+    // on a fast machine the loop was replaying the scene at up to 1.22x and
+    // on a loaded one at 0.32x: the same drop played at different speeds
+    // (a blind tester measured 18.9 to 73.4 steps/s). Sim time may still
+    // fall behind when a step costs more than 1/60 s, which is honest, but
+    // it may never get ahead.
+    simClock += rt.dt * 1000;
+    const ahead = simClock - (performance.now() - clockStart);
+    if (ahead < -500) { simClock = performance.now() - clockStart; }   // resync after a stall
     // always yield a real slice to the renderer: the physics kernels share
     // the GPU with WebGL, and back-to-back steps starve the frame output
-    const wait = Math.max(12, rt.dt * 1000 - stepMs);
+    const wait = Math.max(12, ahead);
     await yieldSlice(wait);
   }
   running = false;
