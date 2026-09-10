@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
+from physsplat.common import pencil as PENCIL
 from physsplat.eval.metrics import capsule_from_offsets
 
 
@@ -36,15 +37,29 @@ def convert(pkl_path: str, out_dir: Path) -> str:
     r3 = lambda a, n=5: np.round(np.asarray(a, np.float64), n).tolist()
     bodies = []
     for b in range(len(d["offsets_list"])):
-        axis, half, radius = capsule_from_offsets(d["offsets_list"][b])
+        # Every body is the canonical pencil, so its contact proxy is stated
+        # rather than fitted: the axis is body +x by construction (the point
+        # is at +x), the half length is the real 75 mm, and `taper` tells the
+        # browser to read the radius off the profile instead of treating the
+        # pencil as a uniform tube. Fitting a capsule to the particles gave
+        # the MEDIAN radius and carried it to the tip, which is what held a
+        # pencil up on a neighbour's point as though the point were 9 mm
+        # thick. capsule_from_offsets stays for non-pencil bodies.
+        if d.get("canonical_pencil"):
+            axis, half, radius = np.array([1.0, 0.0, 0.0]), PENCIL.LENGTH / 2, PENCIL.GRIP_R
+            taper = True
+        else:
+            axis, half, radius = capsule_from_offsets(d["offsets_list"][b])
+            taper = False
         bodies.append({
             "offsets": r3(d["offsets_list"][b]),
             "mass": float(d["mass"][b]),
             "inertia": r3(d["inertia_diag"][b], 12),
             "pos": r3(d["pos"][-1][b]),
             "quat": r3(d["quat"][-1][b], 6),
+            "tip_confidence": round(float(d.get("tip_conf", [0.0] * 99)[b]), 3),
             "capsule": {"axis": r3(axis, 4), "half": round(float(half), 4),
-                        "radius": round(float(radius), 4)},
+                        "radius": round(float(radius), 5), "taper": taper},
             "render_verts": r3(d["render"][b]["verts"], 4),
             "render_colors": vivid(np.asarray(d["render"][b]["colors"], np.uint8)).tolist(),
             "render_faces": np.asarray(d["render"][b].get("faces", []), np.int32).tolist(),

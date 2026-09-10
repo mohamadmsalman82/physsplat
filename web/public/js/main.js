@@ -6,6 +6,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { PhysSim } from "./sim.js";
 import { Diagnostics, Probes } from "./diag.js";
+import { Sensors } from "./sensors.js";
 import { buildPencil } from "./pencil_mesh.js";
 import { grabForce } from "./physics.js";
 
@@ -113,7 +114,13 @@ async function loadScene(name) {
   sim.packet = packet;
   sim.reset();
   dbg.scriptDrag = dbg.scriptPoke = null;
-  if (!diag) { diag = new Diagnostics(sim); dbg.probe = new Probes(dbg, sim, diag); }
+  if (!diag) {
+    diag = new Diagnostics(sim);
+    dbg.probe = new Probes(dbg, sim, diag);
+    // full-transparency sensor layer: what is touching what, where on
+    // each pencil, and whether anything is moving that should not be
+    dbg.sensors = new Sensors(sim);
+  }
   else diag.reset(`scene:${name}`);
   packet.bodies.forEach((b, i) => {
     const geo = new THREE.BufferGeometry();
@@ -166,7 +173,15 @@ async function loadScene(name) {
 // or a neighbour, so the pile has to be given time to get there before it
 // is shown; at 0.75 s a blind tester caught scenes frozen mid-settle with
 // pencils millimetres in the air.
-const PREROLL_STEPS = 180;
+// The packets ship already settled (web/test/settle_packets.mjs runs the
+// same model over each scene until every body is at rest and writes the
+// pose back), so there is nothing to hide any more. This was 180, which is
+// 3 s of simulated time but 6 to 12 s of wall time at 35 to 60 ms a step:
+// every page load and every press of reset showed a frozen, visibly wrong
+// pile for ten seconds and then snapped every pencil up to 26 mm into
+// place. A dozen steps is insurance against a packet that was edited by
+// hand and never re-settled, and it is imperceptible.
+const PREROLL_STEPS = 12;
 let preroll = 0;
 
 /**
@@ -440,10 +455,11 @@ async function physicsLoop() {
     try {
       await sim.step(...act);
       diag?.record(actInfo);
-      if (preroll > 0) {
-        if (--preroll === 0) { prevState = currState = null; syncTransforms(); }
-        continue;                       // no render of the settling-in steps
-      }
+      dbg.sensors?.sample(actInfo);
+      if (preroll > 0 && --preroll === 0) { prevState = currState = null; }
+      // draw every step, pre-roll included. Skipping the draw meant the last
+      // thing on screen during pre-roll was the raw loaded pose, so the user
+      // watched a stale pile sit still and then jump.
       syncTransforms();
     } catch (e) {
       err(e);

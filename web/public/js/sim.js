@@ -5,8 +5,8 @@
  */
 import {
   actionFeature, buildEdges, capsuleClosest, capsuleWorld, edgeFeatures,
-  externalAccels, quatFromRotvec, quatMul, quatToMatrix, stepBodies,
-  supportAnalysis, supportPoints,
+  externalAccels, lowestSurface, quatFromRotvec, quatMul, quatToMatrix,
+  stepBodies, supportAnalysis, supportPoints,
 } from "./physics.js";
 
 const SETTLE_STEPS = 15;   // consecutive slow steps before a body is held still
@@ -31,6 +31,12 @@ const STICTION_V = 0.02, STICTION_VZ = 0.01, STICTION_W = 0.6, STICTION_STEPS = 
 // slow enough that the correction is never itself a jump through
 // something. The guard runs three times a step, so up to 4.5 mm.
 const MAX_CORRECTION = 1.5e-3;
+// A whole-step budget on top of the per-pass cap was tried and measured
+// worse, so it is not here: capping each body's total correction at 3 mm a
+// step made fast pulls tunnel FURTHER (IMG_8504 5.7 mm -> 6.8, IMG_8596
+// 0.3 -> 7.8), because an overlap the guard is not allowed to finish
+// clearing is still there next step, and the step after that. The per-pass
+// cap plus the separation velocity is what works.
 // The rest of a correction is delivered as speed: enough to clear an
 // overlap in about three steps, never faster than a pencil is pushed.
 const SEPARATION_BETA = 0.3, SEPARATION_V_MAX = 0.3;
@@ -38,6 +44,15 @@ const SEPARATION_BETA = 0.3, SEPARATION_V_MAX = 0.3;
 const HELD_SPEED_MAX = 0.25;
 // how many bounded correction passes a step may take to clear an overlap
 const GUARD_PASSES = 12;
+// Seating. The learned contact model senses through the graph's contact
+// radius, which is 6 mm, so it can hold a pencil up several millimetres
+// short of whatever is under it and call that equilibrium. The sensor layer
+// found one 9.9 mm above the table whose only contact was a pencil ABOVE
+// it, which is precisely what a player reports as "they hover and are not
+// physically touching". A body that has stopped moving and is not being
+// held is therefore lowered until something is actually under it, a
+// millimetre at a time so it settles rather than snaps.
+const SEAT_V = 0.02, SEAT_W = 0.5, SEAT_TOL = 2e-4, SEAT_MAX = 1e-3, SEAT_REACH = 8e-3;
 
 export class PhysSim {
   /**
@@ -383,18 +398,13 @@ export class PhysSim {
 
   #groundGuard() {
     for (let b = 0; b < this.B; b++) {
-      const R = quatToMatrix(this.state.quat[b]);
-      let minz = Infinity;
-      for (const o of this.offsets[b]) {
-        const z = R[6] * o[0] + R[7] * o[1] + R[8] * o[2] + this.state.pos[b][2];
-        if (z < minz) minz = z;
-      }
+      const minz = this.#lowest(b);
       if (minz < 0) {
         // capped like the capsule guard: rotating a 150 mm pencil a few
         // degrees plunges an end far below the floor, and lifting the whole
         // body out in one step was a 13 mm teleport that carried it through
         // its neighbours. It comes out over a few steps instead.
-        const lift = Math.min(-minz, MAX_CORRECTION);
+        const lift = Math.min(-minz, MAX_CORRECTION);   // the floor is a hard constraint: no budget
         this.state.pos[b][2] += lift;
         if (this.last) this.last.guard.ground[b] += lift;
         if (this.state.linvel[b][2] < 0 && this.#lying(b)) this.state.linvel[b][2] = 0;
@@ -404,6 +414,27 @@ export class PhysSim {
           Math.min((-minz - lift) * SEPARATION_BETA / this.rt.dt, SEPARATION_V_MAX);
       }
     }
+  }
+
+  /**
+   * How high the lowest point of body b's surface sits above the table.
+   *
+   * For a canonical pencil this is the analytic surface, not the lowest
+   * particle. The particles are a 4 mm-spaced sample, so resting on the
+   * lowest one leaves the real surface about 0.4 mm under the table, which
+   * is exactly what a pencil sinking into the tabletop looks like. Bodies
+   * without a profile fall back to their particles.
+   */
+  #lowest(b) {
+    const cap = this.packet.bodies[b].capsule;
+    if (cap && cap.taper) return lowestSurface(this.state.pos[b], this.state.quat[b], cap);
+    const R = quatToMatrix(this.state.quat[b]);
+    let minz = Infinity;
+    for (const o of this.offsets[b]) {
+      const z = R[6] * o[0] + R[7] * o[1] + R[8] * o[2] + this.state.pos[b][2];
+      if (z < minz) minz = z;
+    }
+    return minz;
   }
 
   /**
@@ -427,12 +458,18 @@ export class PhysSim {
       const p = this.state.pos[b], q = prePos[b];
       maxDisp = Math.max(maxDisp, Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]));
     }
-    const minR = Math.min(...bs.map((x) => x.capsule.radius));
-    this.sweptInfo = { maxDisp, minR, K: 0, hits: 0 };
-    if (maxDisp < 0.5 * minR) return;              // too slow to tunnel
-    // slices no longer than a quarter radius, so an impact is caught while
-    // it is still shallow enough for the guards to resolve outward
-    const K = Math.min(32, Math.ceil(maxDisp / (0.25 * minR)));
+    // Slice the path by an absolute distance, not by a fraction of the
+    // body's radius. Tying it to the radius meant the check got coarser
+    // exactly when the bodies got fatter: `capsule.radius` went from a
+    // 3.7 to 4.6 mm fitted median to the canonical pencil's 5.5 mm grip,
+    // which quietly stretched the slices from 0.93 to 1.38 mm and let a
+    // fast pull in IMG_8504 tunnel 4.4 mm where it had managed 1.6.
+    // A millimetre is the scale that matters here whatever the body is:
+    // shallow enough that the guards can still push the pair apart.
+    const SLICE = 1e-3;
+    this.sweptInfo = { maxDisp, minR: SLICE, K: 0, hits: 0 };
+    if (maxDisp < SLICE) return;                   // too slow to tunnel
+    const K = Math.min(48, Math.ceil(maxDisp / SLICE));
     this.sweptInfo.K = K;
     const qa = [0, 0, 0, 0];
     const poseAt = (b, t) => {
@@ -494,6 +531,57 @@ export class PhysSim {
   }
 
   /**
+   * How far body b could drop straight down before it touched anything.
+   *
+   * Bisection rather than algebra: the pencil is a surface of revolution
+   * with a varying radius and the thing below it is another one at some
+   * angle, so the clearance has no closed form worth writing. Twelve
+   * halvings over an 8 mm reach resolves it to two microns.
+   */
+  #dropGap(b) {
+    const bs = this.packet.bodies;
+    const clear = (d) => {
+      const p = [this.state.pos[b][0], this.state.pos[b][1], this.state.pos[b][2] - d];
+      if (lowestSurface(p, this.state.quat[b], bs[b].capsule) < 0) return false;
+      const me = capsuleWorld(p, this.state.quat[b], bs[b].capsule);
+      for (let j = 0; j < this.B; j++) {
+        if (j === b) continue;
+        const other = capsuleWorld(this.state.pos[j], this.state.quat[j], bs[j].capsule);
+        if (capsuleClosest(me, other).pen > 0) return false;
+      }
+      return true;
+    };
+    if (!clear(0)) return 0;                 // already touching something
+    let lo = 0, hi = SEAT_REACH;
+    if (clear(hi)) return hi;                // nothing within reach below it
+    for (let k = 0; k < 12; k++) {
+      const mid = (lo + hi) / 2;
+      if (clear(mid)) lo = mid; else hi = mid;
+    }
+    return lo;
+  }
+
+  /**
+   * Lower every settled, unheld body onto whatever is really beneath it.
+   * See SEAT_* above for why this is needed at all.
+   */
+  #seat(actBody) {
+    const bs = this.packet.bodies;
+    if (!bs.length || !bs[0].capsule) return;
+    for (let b = 0; b < this.B; b++) {
+      if (b === actBody) continue;                       // never fight the grab
+      const v = this.state.linvel[b], w = this.state.angvel[b];
+      if (Math.hypot(v[0], v[1], v[2]) > SEAT_V) continue;
+      if (Math.hypot(w[0], w[1], w[2]) > SEAT_W) continue;
+      const gap = this.#dropGap(b);
+      if (gap <= SEAT_TOL || gap >= SEAT_REACH) continue;  // seated, or in flight
+      const d = Math.min(gap, SEAT_MAX);
+      this.state.pos[b][2] -= d;
+      if (this.last) this.last.guard.seat = (this.last.guard.seat ?? 0) + d;
+    }
+  }
+
+  /**
    * Deepest unresolved penetration in the scene right now (m), counting
    * BOTH pencil against pencil and pencil against the table. Measuring
    * only the first let the correction loop stop while a body was still
@@ -507,13 +595,7 @@ export class PhysSim {
     let w = 0;
     for (let i = 0; i < this.B; i++) for (let j = i + 1; j < this.B; j++)
       w = Math.max(w, capsuleClosest(segs[i], segs[j]).pen);
-    for (let b = 0; b < this.B; b++) {
-      const R = quatToMatrix(this.state.quat[b]);
-      let minz = Infinity;
-      for (const o of this.offsets[b])
-        minz = Math.min(minz, R[6] * o[0] + R[7] * o[1] + R[8] * o[2] + this.state.pos[b][2]);
-      w = Math.max(w, -minz);
-    }
+    for (let b = 0; b < this.B; b++) w = Math.max(w, -this.#lowest(b));
     return w;
   }
 
@@ -1017,11 +1099,28 @@ export class PhysSim {
         this.#capsuleGuard(); this.#groundGuard();
         if (this.#worstOverlap() < 3e-4) break;
       }
+      // seat before settling: settle pins a slow body's pose, and pinning it
+      // while it is still floating is exactly how a hovering pencil becomes
+      // a permanently hovering pencil
+      this.#seat(actBody);
       this.#settle(prePos, preQuat, actBody);
       // settle restores poses, which undoes the guards' pushes on held
       // bodies: two settled pencils that were nudged into each other stayed
       // 3.8 mm overlapped for two seconds. Separate them after the restore.
       this.#capsuleGuard(); this.#groundGuard();
+      // And clamp the held body ONE more time, because the guards have just
+      // added separation velocity on top of the grab's. Measured on a fast
+      // pull in IMG_8504, a body clamped to 250 mm/s before the guards left
+      // the step at 388, which is 6.5 mm of travel in one 16.7 ms step and
+      // the reason a yanked pencil could still cut through its neighbours
+      // mid-step. The guards keep their positional correction, which is what
+      // actually resolves overlap; only the speed they hand forward is
+      // bounded.
+      if (actPinch && actBody >= 0) {
+        const v = this.state.linvel[actBody];
+        const sp = Math.hypot(v[0], v[1], v[2]);
+        if (sp > HELD_SPEED_MAX) for (let q = 0; q < 3; q++) v[q] *= HELD_SPEED_MAX / sp;
+      }
     }
     this.linHist.shift(); this.linHist.push(this.state.linvel.map((v) => [...v]));
     this.angHist.shift(); this.angHist.push(this.state.angvel.map((v) => [...v]));

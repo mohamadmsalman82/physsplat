@@ -11,6 +11,7 @@
  * All constants come from runtime.json (written by the ONNX exporter) so
  * the browser can never drift from the training-time values.
  */
+import { PROFILE, radiusAtOffset } from "./pencil.js";
 
 // ---------------------------------------------------------------- graph
 
@@ -196,20 +197,76 @@ export function stepBodies(state, residual, ext, dt, gravity) {
 
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 
-/** Capsule in world space: center p, unit axis a, half length h, radius r. */
+/**
+ * Capsule in world space: center p, unit axis a, half length h, radius r.
+ * `taper` carries the canonical pencil profile, in which case the radius is
+ * a function of position along the axis instead of the constant r, and the
+ * point is at +a.
+ */
 export function capsuleWorld(pos, quat, cap) {
   const R = quatToMatrix(quat);
-  return { p: pos, a: matVec(R, cap.axis), h: cap.half, r: cap.radius };
+  return { p: pos, a: matVec(R, cap.axis), h: cap.half, r: cap.radius,
+    taper: cap.taper === true };
+}
+
+const radiusOn = (C, s) => (C.taper ? radiusAtOffset(s, C.h) : C.r);
+
+/**
+ * The height of the lowest point of a body's SURFACE above z = 0.
+ *
+ * The particles are a 4 mm-spaced sample of that surface, so holding the
+ * lowest particle at the table leaves the surface between samples dipping
+ * about 0.4 mm below it, which is drawn pencil under the table. Every body
+ * is the same analytic shape now, so the exact answer is available: for a
+ * surface of revolution the lowest point at axial position s sits
+ * r(s) * sqrt(1 - dz^2) below the axis, and the lowest point of the body is
+ * the minimum of that over the length. Sampling s finely is exact enough,
+ * since the profile is piecewise linear and this is a 1D minimum.
+ */
+export function lowestSurface(pos, quat, cap) {
+  const C = capsuleWorld(pos, quat, cap);
+  const drop = Math.sqrt(Math.max(0, 1 - C.a[2] * C.a[2]));
+  let lo = Infinity;
+  if (C.taper) {
+    // Exactly, not on a grid. Between two knots the radius is linear in s,
+    // so z(s) is linear in s and its minimum over that span is at one end of
+    // it. Evaluating the knots is therefore the exact answer, and a uniform
+    // 128-point grid was not: it missed the true minimum on the cone, where
+    // the radius falls 3 mm over 8, by up to 0.27 mm of drawn pencil under
+    // the table.
+    for (const [t, r] of PROFILE) {
+      const s = (t - 0.5) * 2 * C.h;
+      const z = pos[2] + s * C.a[2] - r * drop;
+      if (z < lo) lo = z;
+    }
+    return lo;
+  }
+  for (const s of [-C.h, C.h]) {
+    const z = pos[2] + s * C.a[2] - C.r * drop;
+    if (z < lo) lo = z;
+  }
+  return lo;
 }
 
 /**
  * Closest points between the axis segments of two capsules (p +/- h*a).
- * Returns the axis distance, the overlap `pen` (positive when the capsules
+ * Returns the axis distance, the overlap `pen` (positive when the bodies
  * interpenetrate), the unit normal from B toward A, and both points.
+ *
+ * A pencil is not a capsule. Its radius runs from 0.3 mm at the lead to
+ * 5.5 mm at the grip, and treating it as a uniform 4.5 mm tube is what made
+ * a pencil resting on a neighbour's POINT sit up as though that point were
+ * the full barrel: the guard separated them by a radius the object does not
+ * have there, gravity pulled back, and the pair twitched against each other
+ * every step. So when both bodies carry the canonical profile, the contact
+ * is the deepest overlap anywhere along the two axes, not the overlap at the
+ * closest approach of two lines. Those differ exactly where it matters,
+ * because the fattest part of one pencil is rarely opposite the fattest part
+ * of the other.
  */
 export function capsuleClosest(A, B) {
-  const r = [A.p[0] - B.p[0], A.p[1] - B.p[1], A.p[2] - B.p[2]];
   const dot = (u, v) => u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+  const r = [A.p[0] - B.p[0], A.p[1] - B.p[1], A.p[2] - B.p[2]];
   const aa = dot(A.a, A.a), ee = dot(B.a, B.a), bb = dot(A.a, B.a);
   const cc = dot(A.a, r), ff = dot(B.a, r);
   const den = aa * ee - bb * bb;
@@ -217,12 +274,44 @@ export function capsuleClosest(A, B) {
   s = clamp(s, -A.h, A.h);
   let t = clamp((bb * s + ff) / ee, -B.h, B.h);
   s = clamp((bb * t - cc) / aa, -A.h, A.h);
-  const ca = [A.p[0] + s * A.a[0], A.p[1] + s * A.a[1], A.p[2] + s * A.a[2]];
-  const cb = [B.p[0] + t * B.a[0], B.p[1] + t * B.a[1], B.p[2] + t * B.a[2]];
-  const d = [ca[0] - cb[0], ca[1] - cb[1], ca[2] - cb[2]];
-  const dist = Math.hypot(d[0], d[1], d[2]);
-  const n = dist > 1e-9 ? d.map((x) => x / dist) : [0, 0, 1];
-  return { dist, pen: A.r + B.r - dist, n, ca, cb, s, t };
+
+  const at = (S, T) => {
+    const ca = [A.p[0] + S * A.a[0], A.p[1] + S * A.a[1], A.p[2] + S * A.a[2]];
+    const cb = [B.p[0] + T * B.a[0], B.p[1] + T * B.a[1], B.p[2] + T * B.a[2]];
+    const d = [ca[0] - cb[0], ca[1] - cb[1], ca[2] - cb[2]];
+    const dist = Math.hypot(d[0], d[1], d[2]);
+    return { ca, cb, d, dist, pen: radiusOn(A, S) + radiusOn(B, T) - dist };
+  };
+  // t that minimises the axis distance for a given s, which is where the
+  // deepest overlap sits for any radius profile that varies slowly
+  const bestT = (S) => clamp((bb * S + ff) / ee, -B.h, B.h);
+
+  if (A.taper || B.taper) {
+    let best = at(s, t);
+    // sweep the whole of A, then refine: the constant-radius closest point
+    // is only a starting guess once the radius varies along the body
+    const COARSE = 32;
+    for (let i = 0; i <= COARSE; i++) {
+      const S = -A.h + (2 * A.h * i) / COARSE;
+      const c = at(S, bestT(S));
+      if (c.pen > best.pen) { best = c; s = S; t = bestT(S); }
+    }
+    let win = (2 * A.h) / COARSE;
+    for (let pass = 0; pass < 3; pass++) {
+      for (let i = -4; i <= 4; i++) {
+        const S = clamp(s + (win * i) / 4, -A.h, A.h);
+        const c = at(S, bestT(S));
+        if (c.pen > best.pen) { best = c; s = S; t = bestT(S); }
+      }
+      win /= 4;
+    }
+    const n = best.dist > 1e-9 ? best.d.map((x) => x / best.dist) : [0, 0, 1];
+    return { dist: best.dist, pen: best.pen, n, ca: best.ca, cb: best.cb, s, t };
+  }
+
+  const c = at(s, t);
+  const n = c.dist > 1e-9 ? c.d.map((x) => x / c.dist) : [0, 0, 1];
+  return { dist: c.dist, pen: c.pen, n, ca: c.ca, cb: c.cb, s, t };
 }
 
 // ---------------------------------------------------------------- support

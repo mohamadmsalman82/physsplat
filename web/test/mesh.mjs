@@ -48,6 +48,7 @@ import { register } from "module";
 register("./three-resolve.mjs", import.meta.url);
 const THREE = await import("three");
 const { buildPencil } = await import("../public/js/pencil_mesh.js");
+const { lowestSurface } = await import("../public/js/physics.js");
 
 const SCENES = ["IMG_8504", "IMG_8513", "IMG_8596", "IMG_8626"];
 
@@ -131,9 +132,49 @@ for (const scene of SCENES) {
     }
   });
 
-  check(flatOut * 1000 <= FLAT_OUT_MM,
-    `${scene}: lying flat, nothing drawn goes below the lowest particle ` +
-    `(${(flatOut * 1000).toFixed(3)} mm, body ${flatOutBody})`);
+  // What the ground rule actually holds. It used to hold the lowest
+  // PARTICLE, and particles are a 4 mm-spaced sample of the surface, so the
+  // real surface dipped about 0.4 mm below the table between them. It now
+  // holds the analytic surface, and this is the check that says so: put each
+  // body flat on the table in a hundred rolled orientations and ask how far
+  // the drawn mesh reaches below what the rule holds.
+  {
+    let worst = 0, worstBody = -1;
+    packet.bodies.forEach((b, bi) => {
+      if (!b.capsule) return;
+      const verts = meshVertices(buildPencil(b));
+      const axis = new THREE.Vector3(...b.capsule.axis).normalize();
+      // meshVertices returns body-frame coordinates, so a pose places them
+      // in the world directly. Roll the pencil about its own axis through a
+      // full turn, since the clip and the grip make it not quite round and
+      // the worst case is whichever face is down.
+      const v = new THREE.Vector3();
+      for (let k = 0; k < 100; k++) {
+        // roll in the BODY frame: post-multiply, since `axis` is the body's
+        // own x. Pre-multiplying rolled about a world direction and tumbled
+        // the pencil end over end instead.
+        const pose = new THREE.Quaternion(...b.quat).multiply(
+          new THREE.Quaternion().setFromAxisAngle(axis, (k / 100) * 2 * Math.PI));
+        const held = lowestSurface(b.pos, [pose.x, pose.y, pose.z, pose.w], b.capsule);
+        let low = Infinity;
+        for (const p of verts) {
+          v.set(p[0], p[1], p[2]).applyQuaternion(pose);
+          if (v.z + b.pos[2] < low) low = v.z + b.pos[2];
+        }
+        const below = held - low;
+        if (below > worst) { worst = below; worstBody = bi; }
+      }
+    });
+    check(worst * 1000 <= FLAT_OUT_MM,
+      `${scene}: nothing drawn goes below what the ground rule holds ` +
+      `(${(worst * 1000).toFixed(4)} mm, body ${worstBody})`);
+  }
+
+  // and, for the record, how much of the body the particle sample misses.
+  // This is not a defect any more, it is why the ground rule stopped using
+  // the particles, so it is reported rather than asserted on.
+  console.log(`     (particle sample misses ${(flatOut * 1000).toFixed(2)} mm ` +
+    `of the surface, body ${flatOutBody}; the ground rule no longer uses it)`);
   check(flatGap * 1000 <= FLAT_GAP_MM,
     `${scene}: lying flat, the drawing does not float inside the body ` +
     `(${(flatGap * 1000).toFixed(2)} mm, body ${flatGapBody})`);

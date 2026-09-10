@@ -22,6 +22,7 @@ import trimesh
 from scipy.spatial.transform import Rotation
 
 from ..common import constants as C
+from ..common import pencil as PENCIL
 from ..common.particles import farthest_point_sample
 
 # Effective density so a reconstructed pencil weighs about the real 6.2 g
@@ -216,78 +217,159 @@ class ReconBody:
     verts: np.ndarray          # render mesh, body frame
     faces: np.ndarray
     colors: np.ndarray
+    tip_conf: float = 0.0      # 0 = which end is the point is a coin flip
+
+
+def _tip_sign(pts, colors, com, axis) -> tuple[int, float]:
+    """Which way along `axis` the pencil's POINT faces, and how much to
+    believe it.
+
+    The canonical body is the same object every time, so nothing in the
+    geometry says which end is which any more; it has to come from colour.
+    Three cues, all weak on their own, all measured on the reconstruction:
+    the lead is nearly black, the eraser is white, and the rubber grip is
+    the least saturated thing on the pencil and sits nearer the point.
+
+    They are weak because they should be. The eraser is a 3 mm cap on a
+    150 mm pencil, the lead is smaller still, and in a pile the ends are
+    exactly what is occluded. Measured over these four scenes the three
+    cues disagree with each other on roughly half the bodies, so this
+    returns a margin as well as a sign and the packet records it. A body
+    with a low margin is a coin flip and should be read as one rather than
+    trusted because it came out of code.
+    """
+    c = np.asarray(colors, float)
+    a = (np.asarray(pts, float) - com) @ axis
+    span = a.max() - a.min()
+    if span < 1e-6 or len(c) != len(a):
+        return 1, 0.0
+    u = (a - a.min()) / span                       # 0 at one end, 1 at the other
+    lum = 0.299 * c[:, 0] + 0.587 * c[:, 1] + 0.114 * c[:, 2]
+    mx, mn = c.max(1), c.min(1)
+    sat = np.where(mx > 1, (mx - mn) / np.maximum(mx, 1), 0.0)
+
+    votes = []
+    dark = u[lum <= np.percentile(lum, 5)]
+    if len(dark):
+        votes.append(dark.mean() - 0.5)            # lead -> the point
+    light = u[lum >= np.percentile(lum, 95)]
+    if len(light):
+        votes.append(0.5 - light.mean())           # eraser -> away from it
+    grey = u[sat <= np.percentile(sat, 10)]
+    if len(grey):
+        votes.append(grey.mean() - 0.5)            # grip -> nearer the point
+    if not votes:
+        return 1, 0.0
+    score = float(np.mean(votes))
+    agree = float(np.mean([np.sign(v) == np.sign(score) for v in votes]))
+    # margin: how far from a coin flip, 0 when the cues cancel or disagree
+    return (1 if score >= 0 else -1), abs(score) * 2 * agree
+
+
+def _pair_overlap(pa, Ra, pb, Rb):
+    """Deepest overlap between two canonical pencils, and the direction to
+    push A away from B. Mirrors capsuleClosest in web/public/js/physics.js:
+    the radius varies along the pencil, so the deepest overlap is generally
+    not at the closest approach of the two axes.
+    """
+    half = PENCIL.LENGTH / 2
+    da, db = Ra[:, 0], Rb[:, 0]           # body +x is the pencil's axis
+    best = (-1e9, None, None)
+    for s in np.linspace(-half, half, 33):
+        ca = pa + s * da
+        t = float(np.clip((ca - pb) @ db, -half, half))
+        cb = pb + t * db
+        d = ca - cb
+        dist = float(np.linalg.norm(d))
+        pen = float(PENCIL.radius_at_offset(s) + PENCIL.radius_at_offset(t)) - dist
+        if pen > best[0]:
+            best = (pen, d / dist if dist > 1e-9 else np.array([0.0, 0.0, 1.0]), s)
+    return best[0], best[1]
+
+
+def _settle(bodies, iters: int = 300, tol: float = 1e-5):
+    """Push the scene apart until nothing overlaps, then set it on the table.
+
+    Needed because the canonical pencil is 150 mm and the reconstructions it
+    replaces measured 99 to 150, so growing each one back to its real length
+    drives ends into neighbours the photograph shows merely touching. This
+    only resolves overlap and re-grounds; the demo's own pre-roll then
+    settles the scene with the learned model.
+    """
+    if not bodies:
+        return
+    R = [Rotation.from_quat(b.quat).as_matrix() for b in bodies]
+    for _ in range(iters):
+        worst = 0.0
+        for i in range(len(bodies)):
+            for j in range(i + 1, len(bodies)):
+                pen, n = _pair_overlap(bodies[i].pos, R[i], bodies[j].pos, R[j])
+                if pen <= tol:
+                    continue
+                worst = max(worst, pen)
+                shift = (0.5 * pen) * n
+                bodies[i].pos = (bodies[i].pos + shift).astype(np.float32)
+                bodies[j].pos = (bodies[j].pos - shift).astype(np.float32)
+        if worst <= tol:
+            break
+    # and set the pile on the table, measured on the particles the ground
+    # rule actually holds rather than on the reconstruction's vertices
+    drop = min(float((R[i] @ b.offsets.T).T[:, 2].min() + b.pos[2])
+               for i, b in enumerate(bodies))
+    for b in bodies:
+        b.pos = (b.pos - np.array([0.0, 0.0, drop], np.float32)).astype(np.float32)
 
 
 def build_body(cluster_verts, cluster_colors, faces=None) -> ReconBody | None:
-    """faces: (F, 3) indices into cluster_verts (the reconstruction's own
-    triangles restricted to this body) so the demo can render a lit surface
-    instead of a point cloud."""
-    hull0 = trimesh.Trimesh(vertices=cluster_verts).convex_hull
-    if hull0.volume < 1e-8:
+    """One pencil.
+
+    The shape is not measured, it is known: see common/pencil.py. What the
+    photograph contributes is where this pencil is, which way it lies, which
+    end is the point, and what colour it is. Everything else comes from the
+    canonical object, so every pencil in every scene is the same 150 mm,
+    9 mm, 6.2 g BIC Matic Grip, which is what they are.
+
+    Taking the shape from the reconstruction instead is what produced the
+    bodies this replaces: 99 to 150 mm long, elliptical in section, tapered
+    at the ends where a real pencil is straight, and no two alike.
+    """
+    pts = np.asarray(cluster_verts, float)
+    if len(pts) < 20:
         return None
-    com0 = hull0.center_mass
-    w0, V = np.linalg.eigh(hull0.moment_inertia)   # principal axes, world
-    if np.linalg.det(V) < 0:
-        V[:, 0] *= -1                                # keep right-handed
-    body_verts = (cluster_verts - com0) @ V          # x = long axis
+    com0 = pts.mean(0)
+    _, _, Vt = np.linalg.svd(pts - com0, full_matrices=False)
+    axis = Vt[0]
+    a = (pts - com0) @ axis
+    # centre on the midpoint of the extremes, not the centroid: sampling is
+    # denser in the middle of a reconstruction, which drags the mean
+    centre = com0 + axis * ((a.min() + a.max()) / 2)
 
-    # Single-image reconstruction inflates thin objects: these pencils came
-    # out 5-8.5 mm in radius against a 4-4.5 mm barrel (docs/objects.md),
-    # thicker than any training pencil (3.5-5.5 mm) and visibly fat. The
-    # length is trusted (KNOWN_LENGTH scaling); the radius is set the same
-    # way, by scaling the cross-section about the axis to the known value.
-    # scale the outer radius (95th percentile: the grip and clip bumps set
-    # the convex hull, and the physics samples the hull), not the median
-    radial = np.linalg.norm(body_verts[:, 1:], axis=1)
-    r_out = float(np.percentile(radial, 95))
-    if r_out > 1e-4:
-        body_verts[:, 1:] *= KNOWN_RADIUS / r_out
-    hull = trimesh.Trimesh(vertices=body_verts).convex_hull
-    com_b = hull.center_mass
-    body_verts = body_verts - com_b
-    hull.apply_translation(-com_b)
-    mass = PENCIL_DENSITY * hull.volume
-    inertia_b = hull.moment_inertia * PENCIL_DENSITY  # about COM, body frame
-    w, U = np.linalg.eigh(inertia_b)                 # re-diagonalize
-    if np.linalg.det(U) < 0:
-        U[:, 0] *= -1
-    body_verts = body_verts @ U
-    R_world = V @ U
-    quat = Rotation.from_matrix(R_world).as_quat()
-    com = com0 + V @ com_b
-    surf = trimesh.Trimesh(vertices=np.asarray(hull.vertices) @ U,
-                           faces=hull.faces, process=False)
-    offsets = farthest_point_sample(
-        trimesh.sample.sample_surface(surf, 20000, seed=1)[0])
+    sign, tip_conf = _tip_sign(pts, cluster_colors, com0, axis)
+    x_axis = axis * sign                          # body +x is the point
+    tmp = np.array([0.0, 0.0, 1.0])
+    if abs(float(tmp @ x_axis)) > 0.9:
+        tmp = np.array([0.0, 1.0, 0.0])
+    y_axis = np.cross(tmp, x_axis)
+    y_axis /= np.linalg.norm(y_axis)
+    z_axis = np.cross(x_axis, y_axis)
+    R_world = np.column_stack([x_axis, y_axis, z_axis])
 
-    # Render mesh: a clean capsule fitted to the body (axis = principal axis
-    # of least inertia = body-frame x), colored per vertex from the nearest
-    # reconstruction vertex. Raw reconstruction triangles were lumpy and,
-    # once split per body, full of holes; this keeps the real color bands
-    # (barrel, grip, eraser) on a watertight pencil-shaped surface that also
-    # matches the physics capsule proxy.
+    surf = PENCIL.solid()
+    body_verts = np.asarray(surf.vertices, float)   # body frame, +x = point
     from scipy.spatial import cKDTree
-    along = body_verts[:, 0]
-    radius = KNOWN_RADIUS
-    half = float(max(np.ptp(along) / 2 - radius, 0.01))
-    cap = trimesh.creation.capsule(radius=radius, height=2 * half, count=[24, 12])
-    cap.apply_translation(-cap.center_mass)
-    # capsule is built along z; rotate z -> x
-    cap.apply_transform(trimesh.transformations.rotation_matrix(
-        np.pi / 2, [0, 1, 0]))
-    tree = cKDTree(body_verts)
-    _, nn = tree.query(np.asarray(cap.vertices))
-    render_colors = np.asarray(cluster_colors)[nn]
+    tree = cKDTree(pts)
+    _, nn = tree.query(centre + body_verts @ R_world.T)
 
     return ReconBody(
-        offsets=offsets.astype(np.float32),
-        pos=com.astype(np.float32),
-        quat=quat.astype(np.float32),
-        mass=float(mass),
-        inertia_diag=np.abs(w).astype(np.float32),
-        verts=np.asarray(cap.vertices, np.float32),
-        faces=np.asarray(cap.faces, np.int32),
-        colors=render_colors.astype(np.uint8),
+        offsets=PENCIL.particles().astype(np.float32),
+        pos=centre.astype(np.float32),
+        quat=Rotation.from_matrix(R_world).as_quat().astype(np.float32),
+        mass=float(PENCIL.MASS),
+        inertia_diag=PENCIL.inertia().astype(np.float32),
+        verts=body_verts.astype(np.float32),
+        faces=np.asarray(surf.faces, np.int32),
+        colors=np.asarray(cluster_colors)[nn].astype(np.uint8),
+        tip_conf=float(tip_conf),
     )
 
 
@@ -397,6 +479,8 @@ def mesh_to_packet(mesh: trimesh.Trimesh) -> dict:
         if b is not None and len(b.offsets) >= 40:
             bodies.append(b)
 
+    _settle(bodies)
+
     H = C.HISTORY
     B = len(bodies)
     packet = {
@@ -410,6 +494,8 @@ def mesh_to_packet(mesh: trimesh.Trimesh) -> dict:
         "labels": labels,
         "verts_scaled": verts,
         "colors": colors,
+        "canonical_pencil": True,
+        "tip_conf": [b.tip_conf for b in bodies],
         "render": [
             {"verts": b.verts, "colors": b.colors, "faces": b.faces} for b in bodies],
     }
