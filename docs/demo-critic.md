@@ -579,6 +579,83 @@ point; that has to come from the render colours, the white eraser and the
 dark lead, before it can ship. Recorded here so the next round starts from
 the numbers rather than rediscovering them.
 
-## Round 7
+## Round 7 (2026-09-09): 49/100
 
-Pending.
+Fifteen findings, most of them measured. Two of the three it ranked highest
+were real and are fixed below; the second-ranked one did not reproduce and
+is worth recording as a lesson about the harness.
+
+**Verified, in the code, and fixed.** The reset button froze the page for
+6 to 12 seconds and then teleported every pencil up to 26 mm: the 180-step
+pre-roll ran at 35 to 60 ms a step with nothing drawn, so the last frame on
+screen was the raw loaded pose until the settled one snapped in. The
+packets now ship settled by the real model (`web/test/settle_packets.mjs`)
+and the pre-roll is 12 steps, drawn. Ground was a 600 mm disc over an
+infinite invisible floor. The grab spring did not engage for the first 350
+ms of a press, to tell a flick from a drag, and the follow point was capped
+at 0.30 m/s of simulated time; both are still open, and both are what a
+player feels as lag.
+
+**Did not reproduce: "IMG_8626 never comes to rest, body 4 creeps 40 mm."**
+Headless with the ONNX backend: 0.00 mm drift on every body over 25 s,
+all five at rest. Live with the WebGPU backend, driven by hand with the
+page loop paused: 0.00 mm over 17 s. Live with the page loop running
+normally for 5,522 steps: all five at rest, zero velocity, zero anomaly
+episodes. The critic's session had, by its own account, wedged the physics
+loop twice by writing to an undocumented field, and its measurement
+combined the page's own loop with `waitSteps` calls from a second driver.
+Two drivers interleave steps and produce exactly this kind of number. I
+reproduced the same artefact myself before finding it, which is why
+`docs/sensors.md` now says so in capitals.
+
+**Conflated: contact bookkeeping "3.4 mm too generous per side".** The
+8.36 mm figure is the pick volume, `capsule.radius * 2.2`; the contact
+proxies were 3.7 to 4.6 mm. The underlying complaint, that a uniform
+radius carried to the tip holds a pencil up on a neighbour's point, was
+nonetheless right, and is what the next section fixes.
+
+**Confirmed and useful.** Friction collapses above about 0.8 m/s, outside
+the training distribution; the flick path clamps to 0.6 m/s so it is
+reachable only indirectly. Contact integrity was the strongest result it
+found: sampling every step through grabs, pulls and drops it could not
+make anything pass through anything, and no particle ever went below the
+table. Free flight, restitution and in-distribution sliding friction all
+measured exact.
+
+## Player report (2026-09-10): one shape for everything
+
+Three complaints, with a photograph of a pencil visibly floating above the
+two it rested on: the pencils were not all the same size; they hovered,
+sank into the table, and were lifted off it by a neighbour's tip; and they
+twitched and slid by themselves.
+
+All three had one cause. Every pencil's shape came from its own
+reconstruction (99 to 150 mm long, elliptical, tapered at the ends), the
+contact proxy was a uniform-radius tube, and the drawing was a third
+approximation of the same object. Now there is one canonical Matic Grip
+profile (`common/pencil.py`, `js/pencil.js`) and the physics particles,
+the contact radii, the ground rule and the drawn mesh all come from it.
+Measured after: every body 150.0 mm and 6.2 g; drawing against physics
+0.0000 mm; no body floats in any scene; every body rests at 0.00 mm from
+what is under it; worst residual overlap 0.086 mm; all four scenes at
+rest; parity 5.0e-7 m.
+
+Also from this: `web/public/js/sensors.js`, a layer that names which part
+of which pencil touches which part of which other pencil in millimetres
+from the point. Its first reading on IMG_8626 found body 4 at 9.9 mm above
+the table with its only contact a pencil ABOVE it, which is the hovering
+in the photograph, and which led to the seating rule. Documented in
+`docs/sensors.md`.
+
+Open after this: a fast pull in IMG_8504 shows 5.7 mm of mid-step overlap
+and a 250 mm drop in IMG_8513 3.4 mm, both under deliberately violent
+motion between bodies that are now genuinely 11 mm across at the grip. A
+whole-step correction budget was tried against them and measured worse
+(5.7 to 6.8 mm), so it is documented in `sim.js` and not in. Which end of
+each pencil is the point comes from colour cues that disagree on about
+half the bodies; the packet records a confidence per body, 0.00 to 0.46,
+so nobody trusts it more than it deserves.
+
+## Round 8
+
+Pending: a sensor-driven analysis of the canonical build.
