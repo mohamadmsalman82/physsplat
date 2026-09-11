@@ -656,6 +656,62 @@ each pencil is the point comes from colour cues that disagree on about
 half the bodies; the packet records a confidence per body, 0.00 to 0.46,
 so nobody trusts it more than it deserves.
 
-## Round 8
+## Round 8 (2026-09-10): 39/100, sensor-driven
 
-Pending: a sensor-driven analysis of the canonical build.
+The first round with `physsplat.sensors`, and the first whose every
+finding came with the part of the pencil it happened on. Its top-ranked
+finding was a one-line bug and it explains most of what players had been
+reporting since round 5.
+
+**`actPinch` was never passed.** `main.js` called `sim.step(body, point,
+force)` with three arguments. The fourth gates the pinch damper and both
+held-speed clamps, so none of them ever ran in the browser, while
+`interact.mjs`, which passes `true`, kept passing. Live: a grab with the
+cursor held still reared a pencil to 89.9 deg at 3.2 m/s and 60 rad/s,
+drove it 31 mm through the table and left it standing on its end; a
+40 mm/s drag reached 1.1 m/s; a held pencil in mid-air rotated at 0.337
+rad/s, unchanged in the third decimal for 181 steps, because nothing
+damped it. The critic proved the mechanism by grabbing at the exact
+centre of mass with the cursor still, so the applied force was m*g with
+zero torque, and reading the model's angular residual: 123, 303, 583,
+725, 980, 1004 rad/s^2, alternating in sign, 1431 at worst.
+
+Passing the flag was necessary and not sufficient: even damped, a held
+pencil reared 28 to 35 deg. The learned angular residual on a held body
+is not physics, the model having never seen a stationary held body, so
+on the held body only it is now two-tap averaged (the ringing is exactly
+step-alternating, so the average cancels it and nothing else) and capped
+at 3 rad/s^2, with pinch damping at 60/s. Hold-still tilt after: 3 to 7
+deg, spin 0.09 rad/s, all four scenes. Three new suite checks pin it.
+
+**Three mechanisms under it, all named by the report with numbers.** The
+swept collision check looped over bodies and never the table, which is
+why every deep penetration it found (29 and 31 mm) was a point or eraser
+through the tabletop; the table is in it now. The balance test counted
+particles within the 6 mm contact radius as floor support, so a 4 deg
+tilt read as 86 mm of floor (6 / sin 4 deg), the centre of mass fell
+inside it, and settle froze pencils with 14 mm of air under one end; it
+is 1.5 mm now. And settle's "touching" included a neighbour resting on
+TOP, so a pencil with a load on it and nothing beneath it was frozen
+15 mm in the air; a body with air under it, as the seating pass measures
+it, is not at rest whatever its speed.
+
+**Not a defect, but a harness mismatch worth recording.** The suite
+pre-rolled 180 steps where the page pre-rolls 12, and those 168 steps
+changed which body the support-removal check picked in IMG_8504, from
+one whose load drops cleanly to one lying at 18 deg on its cone whose
+load rides up the incline as it is pulled, slides off the end, and lands
+flat on a neighbour higher than it started. The sensors showed every
+step of that and it is what the physics should do with that geometry.
+The harness pre-rolls 12 now.
+
+**Right, per the report, and worth keeping.** Rest is genuinely
+motionless (13,713 steps to the last digit). Gravity is 9.810 m/s^2
+from the release trace. A pencil laid across another's POINT sits 6.2 mm
+lower than across its barrel and the grip's extra millimetre is modelled
+to 0.00 mm, which is the fix from the previous section working. Drops
+onto a pile overlap 0.14 to 0.56 mm.
+
+## Round 9
+
+Pending.
