@@ -15,7 +15,22 @@ const SETTLE_STEPS = 15;   // consecutive slow steps before a body is held still
 const QUIESCENT_V = 0.05, QUIESCENT_W = 1.0;
 // A pinch resists rotation: 1/s, so held spin decays with a 0.08 s time
 // constant, about what two fingertips on a pencil feel like.
-const PINCH_DAMPING = 12;
+// A pinch holds orientation. Damping at 60/s takes the whole of a held
+// body's spin out every step, which still lets an end grab dangle: the
+// grab's own torque about the centre of mass is 430 rad/s^2 for a 6.2 g
+// pencil held 75 mm from its centre, so it swings at 7 rad/s against this
+// damping and hangs within a few tenths of a second. What it stops is
+// spin with no torque behind it.
+const PINCH_DAMPING = 60;
+// The most angular acceleration the learned residual may put on a held
+// body, rad/s^2. With the damping above the sustained spin a saturated
+// residual can produce is PINCH_ANG_MAX / PINCH_DAMPING: at 40 that was
+// 0.67 rad/s, 38 deg/s, and a pencil held still tilted 28 deg; at 6 it
+// still drifted 11 deg over five seconds. At 3 the worst sustained spin is
+// 0.05 rad/s, 3 deg/s, and only if the model pushes the same way every
+// step. The end-grab dangle is unaffected: that torque is analytic, not
+// residual, and 140 times larger.
+const PINCH_ANG_MAX = 3;
 // A body the guards keep pushing out while it goes nowhere is in a limit
 // cycle, not in motion: 0.5 s of that and settle may claim it.
 const GUARD_HELD_V = 0.06, GUARD_HELD_W = 1.5, GUARD_HELD_STEPS = 30;
@@ -52,7 +67,14 @@ const GUARD_PASSES = 12;
 // physically touching". A body that has stopped moving and is not being
 // held is therefore lowered until something is actually under it, a
 // millimetre at a time so it settles rather than snaps.
-const SEAT_V = 0.02, SEAT_W = 0.5, SEAT_TOL = 2e-4, SEAT_MAX = 1e-3, SEAT_REACH = 8e-3;
+// Reach was 8 mm and a body pinned 15 mm up was therefore out of it and
+// stayed up; a bisection over 30 mm costs nothing more.
+const SEAT_V = 0.02, SEAT_W = 0.5, SEAT_TOL = 2e-4, SEAT_MAX = 1e-3, SEAT_REACH = 30e-3;
+// Particles within this of the table count as floor support for the
+// balance test. It was the 6 mm contact radius, which turned a 4 deg tilt
+// into 86 mm of "floor" (6 / sin 4 deg), put the centre of mass inside it,
+// and let settle pin a pencil with 14 mm of air under one end.
+const FLOOR_SUPPORT_TOL = 1.5e-3;
 
 export class PhysSim {
   /**
@@ -111,7 +133,12 @@ export class PhysSim {
     // reconstruction gets right and heights are what it gets wrong. Pushing
     // along contact normals instead moved pencils up to 6 cm sideways
     // (blind test round 3: "the loader rewrites the photo").
-    if (this.groundGuard && bs.length) {
+    // Not for a packet that already ships settled: it was rested by this
+    // same model with its bodies in exact contact, and a load-time lift of
+    // every touching pair by its full overlap then pushed them apart again,
+    // dropped them, and in IMG_8504 left one body pinned 15 mm in the air
+    // and rotated two others by 8 deg on screen in the first seconds.
+    if (this.groundGuard && bs.length && !this.packet.settled) {
       const lift = new Float64Array(this.B);
       for (let it = 0; it < 60; it++) {
         let moved = false;
@@ -495,6 +522,12 @@ export class PhysSim {
     for (let i = 0; i < this.B; i++) for (let j = i + 1; j < this.B; j++)
       pen0[i * this.B + j] = Math.max(0, capsuleClosest(startSegs[i], startSegs[j]).pen);
 
+    // and the table, which this loop used to leave out entirely: every deep
+    // penetration the sensor agent measured was a pencil's point or eraser
+    // going through the TABLE at 3 m/s while the pencil-pencil check, which
+    // does run here, held body-body overlap to a few millimetres
+    const z0 = bs.map((x, b) => Math.min(0, lowestSurface(prePos[b], preQuat[b], x.capsule)));
+
     for (let k = 1; k <= K; k++) {
       const t = k / K;
       const poses = bs.map((_, b) => poseAt(b, t));
@@ -503,6 +536,10 @@ export class PhysSim {
       for (let i = 0; i < this.B; i++) for (let j = i + 1; j < this.B; j++) {
         const c = capsuleClosest(segs[i], segs[j]);
         if (c.pen > pen0[i * this.B + j] + 3e-4) hits.push({ i, j, n: c.n });
+      }
+      for (let b = 0; b < this.B; b++) {
+        if (lowestSurface(poses[b].pos, poses[b].quat, bs[b].capsule) < z0[b] - 3e-4)
+          hits.push({ i: b, j: -1, n: [0, 0, 1] });
       }
       if (!hits.length) continue;
       // Rewind the WHOLE scene to this moment, so what happens next is
@@ -514,6 +551,11 @@ export class PhysSim {
         this.state.quat[b] = [...poses[b].quat];
       }
       for (const { i, j, n } of hits) {
+        if (j < 0) {                                   // the table: immovable
+          const vi = this.state.linvel[i];
+          if (vi[2] < 0) vi[2] = 0;
+          continue;
+        }
         const vi = this.state.linvel[i], vj = this.state.linvel[j];
         const vrel = (vi[0] - vj[0]) * n[0] + (vi[1] - vj[1]) * n[1] + (vi[2] - vj[2]) * n[2];
         if (vrel >= 0) continue;
@@ -567,6 +609,9 @@ export class PhysSim {
    */
   #seat(actBody) {
     const bs = this.packet.bodies;
+    // how much air is under each slow body this step, for settle: a body
+    // with air under it is not at rest whatever its speed says
+    this.seatGap = new Float64Array(this.B);
     if (!bs.length || !bs[0].capsule) return;
     for (let b = 0; b < this.B; b++) {
       if (b === actBody) continue;                       // never fight the grab
@@ -574,6 +619,7 @@ export class PhysSim {
       if (Math.hypot(v[0], v[1], v[2]) > SEAT_V) continue;
       if (Math.hypot(w[0], w[1], w[2]) > SEAT_W) continue;
       const gap = this.#dropGap(b);
+      this.seatGap[b] = gap;                               // settle reads this
       if (gap <= SEAT_TOL || gap >= SEAT_REACH) continue;  // seated, or in flight
       const d = Math.min(gap, SEAT_MAX);
       this.state.pos[b][2] -= d;
@@ -687,7 +733,7 @@ export class PhysSim {
       // centre of mass is off its support must keep moving, whatever its
       // speed. Judging it here, after the guards moved things, let a body
       // be held still 16 mm off its support while the record said so.
-      spAll.push(supportPoints(parts, start, n, segs, i, this.rt.contact_radius, this.rt.contact_radius));
+      spAll.push(supportPoints(parts, start, n, segs, i, FLOOR_SUPPORT_TOL, this.rt.contact_radius));
       supported[i] = this.balancedNow?.[i] ?? 0;
       for (let j = i + 1; j < this.B; j++) {
         const g = -capsuleClosest(segs[i], segs[j]).pen;
@@ -747,11 +793,23 @@ export class PhysSim {
       // the solver could fix it (one 5 s drag brought every body within
       // 0.9 mm of the table). The pose has to be resolved first: touching
       // the floor or a neighbour within a third of a millimetre.
-      const touching = Math.min(gap[b], lowestOf[b]) < SLEEP_GAP;
-      const slow = (b !== actBody && supported[b] && touching && !standing &&
+      // "Touching" used to mean touching ANYTHING, including a neighbour
+      // lying on top, so a pencil with a load on it and air beneath it
+      // counted as resting and was frozen 15 mm above the table. Air under
+      // a body, as measured by the seating pass this step, means it is not
+      // at rest whatever its speed says.
+      // "Grounded" is looser than the seating pass's own target on purpose.
+      // Demanding the gap be closed to SEAT_TOL before a body may settle put
+      // IMG_8596 body 1 in a limit cycle, seat lowering it 0.2 mm and the
+      // model lifting it 0.2 mm, never fifteen quiet steps in a row, walking
+      // 12 mm across the table at 5 mm/s. A body within a millimetre of what
+      // is under it is at rest; seating closes the last fraction next step.
+      const grounded = (this.seatGap?.[b] ?? 0) <= 1.5 * SEAT_MAX;
+      const touching = Math.min(gap[b], lowestOf[b]) < SLEEP_GAP && grounded;
+      const slow = grounded && ((b !== actBody && supported[b] && touching && !standing &&
         !this.pivoting?.[b] &&
         Math.hypot(...v) < 0.03 && Math.hypot(...w) < 0.6) ||
-        this.guardHeld[b] >= GUARD_HELD_STEPS;
+        this.guardHeld[b] >= GUARD_HELD_STEPS);
       this.restCount[b] = slow ? this.restCount[b] + 1 : 0;
       // every settled step, not only the first: a body that settles during
       // the load pre-roll and only later ends up with a gap under it would
@@ -1018,7 +1076,27 @@ export class PhysSim {
     if (actPinch && actBody >= 0) {
       const w = this.state.angvel[actBody];
       for (let q = 0; q < 3; q++) ext.ang[3 * actBody + q] -= PINCH_DAMPING * w[q];
-    }
+      // The learned angular residual on a HELD body is not physics. Grab a
+      // pencil at its exact centre with the cursor still, so the applied
+      // force is m*g through the centre of mass with zero torque, and the
+      // model answers with an angular acceleration that flips sign every
+      // step and grows: 123, 303, 583, 725, 980, 1004 rad/s^2 (sensor
+      // agent, IMG_8513), 1431 at worst, which is 24 rad/s of spin in one
+      // 16.7 ms step and reared the pencil to 89.9 deg. It was never
+      // trained on a held, stationary body. A pinch holds orientation; a
+      // neighbour can still turn the pencil in the fingers, but not at a
+      // thousand rad/s^2. So on the held body only: average the angular
+      // residual with the previous step's (the ringing is exactly
+      // step-alternating, so the two-tap cancels it and nothing else) and
+      // cap what is left at what a nudge from a neighbour could do.
+      const raw = [residual[6 * actBody + 3], residual[6 * actBody + 4], residual[6 * actBody + 5]];
+      const prev = this.pinchPrev?.body === actBody ? this.pinchPrev.raw : raw;
+      for (let q = 0; q < 3; q++) {
+        const a = 0.5 * (raw[q] + prev[q]);
+        residual[6 * actBody + 3 + q] = Math.max(-PINCH_ANG_MAX, Math.min(PINCH_ANG_MAX, a));
+      }
+      this.pinchPrev = { body: actBody, raw };
+    } else this.pinchPrev = null;
     this.last.ext = ext;
     // Two-tap mean of the residual: cancels the step-alternating ringing
     // the model produces on reconstructed piles. Off by default (it costs
@@ -1075,7 +1153,7 @@ export class PhysSim {
       // back up. "New support" = the centre of mass is now over the support.
       const partsNow = this.particlesWorld();
       const segsNow = bs.map((bb, i) => capsuleWorld(this.state.pos[i], this.state.quat[i], bb.capsule));
-      const spNow = supportPoints(partsNow, start, n, segsNow, b, rt.contact_radius, rt.contact_radius);
+      const spNow = supportPoints(partsNow, start, n, segsNow, b, FLOOR_SUPPORT_TOL, rt.contact_radius);
       const anNow = supportAnalysis(this.state.pos[b], spNow.points);
       if (anNow.n && anNow.dist < 4e-3) {
         for (let q = 0; q < 3; q++) { this.state.linvel[b][q] *= 0.2; this.state.angvel[b][q] *= 0.2; }

@@ -88,36 +88,41 @@ def shadow_mask(rgb: np.ndarray, near: np.ndarray) -> np.ndarray:
 
 
 def fill(rgb: np.ndarray, mask: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    """Replace masked pixels with the desk's smooth field plus the desk's
-    own grain, taken from unmasked pixels elsewhere."""
+    """Rebuild the whole desk as its smooth field plus its grain.
+
+    Not only inside the mask. The pencils' shadows fade out over tens of
+    millimetres and no mask catches all of that, so filling only the hole
+    left a lighter blotch the exact shape of the pile, ringed by desk that
+    still carried the shadows of pencils that were no longer there. Instead
+    the smooth field (the desk's lighting gradient, estimated from every
+    pixel that is not pencil, at a scale far wider than any shadow) is used
+    everywhere, and the desk's fine grain is put back on top of it: the
+    original grain where the desk was visible, grain re-sampled from
+    elsewhere where it was not. A white desk is a gradient plus grain, and
+    this is that, with no pencil-shaped memory in it."""
     f = rgb.astype(np.float32) / 255.0
     keep = (~mask).astype(np.float32)
-    out = f.copy()
     smooth = np.empty_like(f)
     for c in range(3):
-        # sigma wide enough that the fill sees the desk's broad gradient and
-        # not the darker ring the pencil's own shadow leaves around the hole,
-        # which is what made faint ghosts of the pencils
         num = ndimage.gaussian_filter(f[..., c] * keep, 120)
         den = ndimage.gaussian_filter(keep, 120)
         smooth[..., c] = num / np.maximum(den, 1e-4)
-    # grain: what the real desk has on top of its smooth field
+    # Keep the desk's gradient, but not all of it. The phone was close and
+    # its lighting fell off fast across the frame, so the photo's field is a
+    # strong bright-to-grey ramp that, laid on the table, read as a soft
+    # grey patch with a rectangular boundary. Pulled 45% toward its own mean
+    # it is still the desk's light, and it no longer looks like a sheet.
+    mean = smooth.reshape(-1, 3).mean(0)
+    smooth = mean + 0.55 * (smooth - mean)
     fine = np.empty_like(f)
     for c in range(3):
         fine[..., c] = f[..., c] - ndimage.gaussian_filter(f[..., c], 6)
     src = np.nonzero(~mask)
     dst = np.nonzero(mask)
     pick = rng.integers(0, len(src[0]), size=len(dst[0]))
-    grain = fine[src[0][pick], src[1][pick]]
-    filled = f.copy()
-    filled[dst[0], dst[1]] = smooth[dst[0], dst[1]] + grain
-    # Blend, do not cut. A hard mask edge left a visible jagged halo where
-    # the slightly brighter fill met the slightly shadowed desk around it;
-    # a 25 px feather makes the seam invisible at any viewing distance.
-    soft = ndimage.gaussian_filter(mask.astype(np.float32), 25)[..., None]
-    soft = np.clip(soft * 1.6, 0, 1)             # fully fill the interior
-    out = filled * soft + f * (1 - soft)
-    return (np.clip(out, 0, 1) * 255).astype(np.uint8)
+    grain = fine.copy()
+    grain[dst[0], dst[1]] = fine[src[0][pick], src[1][pick]]
+    return (np.clip(smooth + grain, 0, 1) * 255).astype(np.uint8)
 
 
 def body_layout(scene: str):
@@ -206,6 +211,10 @@ def main():
         Image.fromarray(clean).resize((OUT_W, out_h), Image.LANCZOS).save(
             OUT / f"{scene}.jpg", quality=88, optimize=True)
         avg = clean[~mask].reshape(-1, 3).mean(0)
+        b = max(8, clean.shape[0] // 12)
+        border = np.concatenate([clean[:b].reshape(-1, 3), clean[-b:].reshape(-1, 3),
+                                 clean[:, :b].reshape(-1, 3), clean[:, -b:].reshape(-1, 3)])
+        edge = border.mean(0)
 
         reg = register(scene, pm, 1.0 / k, top)
         desc = {
@@ -213,6 +222,7 @@ def main():
             "image_px": [W, H],
             "crop_top_px": int(top / k),
             "desk_rgb": [int(round(v)) for v in avg],
+            "edge_rgb": [int(round(v)) for v in edge],
             "wall_rgb": [int(round(v)) for v in wall.reshape(-1, 3).mean(0)] if wall is not None else None,
             "masked_fraction": float(mask.mean()),
             "orientation": "image right = +x, image up = +y (camera-centric reconstruction frame)",

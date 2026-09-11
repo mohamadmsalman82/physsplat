@@ -51,10 +51,15 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 // the upper left, with the pencils' shadows falling to the lower right and
 // a lot of bounce off the desk. The previous warm key light and dark
 // background were the look of a wooden table in a void, not of this desk.
-const ambient = new THREE.AmbientLight(0xffffff, 0.75);
-const hemi = new THREE.HemisphereLight(0xffffff, 0xc8c8cc, 0.55);
+// Intensities are in three's physical units: ambient and hemisphere light
+// are divided by pi in the shader, so for a white desk (albedo 0.56 linear)
+// to render at the photograph's brightness the three together have to sum
+// to about pi on a horizontal surface. At 0.42 + 0.38 + 1.35 the desk came
+// out a dim grey and the pencils dull with it.
+const ambient = new THREE.AmbientLight(0xffffff, 0.95);
+const hemi = new THREE.HemisphereLight(0xffffff, 0xc8c8cc, 0.80);
 scene.add(ambient, hemi);
-const sun = new THREE.DirectionalLight(0xffffff, 1.35);
+const sun = new THREE.DirectionalLight(0xffffff, 2.0);
 sun.position.set(-0.35, 0.30, 0.85);         // upper left, slightly behind
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
@@ -112,11 +117,14 @@ async function loadDesk(name) {
     const r = await fetch(`./desk/${name}.json`, { cache: "no-cache" });
     if (r.ok) d = await r.json();
   } catch (e) { /* no desk for this scene: the plain base stays */ }
-  const deskRgb = d?.desk_rgb ?? [188, 191, 194];
+  // the plain desk beyond the photo takes the photo's BORDER colour, so
+  // the seam between them is a colour match rather than a visible edge
+  const deskRgb = d?.edge_rgb ?? d?.desk_rgb ?? [188, 191, 194];
   deskBase.material.color.setRGB(deskRgb[0] / 255, deskRgb[1] / 255, deskRgb[2] / 255);
   hemi.groundColor.copy(deskBase.material.color);
   const wallRgb = d?.wall_rgb ?? [150, 154, 160];
-  scene.background.setRGB(wallRgb[0] / 255, wallRgb[1] / 255, wallRgb[2] / 255);
+  scene.background.setRGB(
+    (wallRgb[0] + 2 * deskRgb[0]) / 765, (wallRgb[1] + 2 * deskRgb[1]) / 765, (wallRgb[2] + 2 * deskRgb[2]) / 765);
   if (!d || !d.m_per_px) return;
   deskGroup = new THREE.Group();
   const [W, H] = d.image_px, top = d.crop_top_px ?? 0;
@@ -127,7 +135,7 @@ async function loadDesk(name) {
   const photo = new THREE.Mesh(
     new THREE.PlaneGeometry(w, h),
     new THREE.MeshStandardMaterial({
-      map: tex, alphaMap: featherAlpha(256, Math.round(256 * h / w)),
+      map: tex, alphaMap: featherAlpha(256, Math.round(256 * h / w), 0.32),
       transparent: true, roughness: 0.9, metalness: 0 }));
   // image right is +x and image up is +y (see desk_texture.py); place the
   // photo so its origin pixel sits at the world origin
@@ -135,16 +143,10 @@ async function loadDesk(name) {
   photo.position.set((cx - d.origin_px[0]) * d.m_per_px, -(cy - d.origin_px[1]) * d.m_per_px, 0.00005);
   photo.receiveShadow = true;
   deskGroup.add(photo);
-  if (d.wall_rgb && Number.isFinite(d.wall_y_m)) {
-    const wall = new THREE.Mesh(
-      new THREE.PlaneGeometry(4, 0.8),
-      new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(
-        wallRgb[0] / 255, wallRgb[1] / 255, wallRgb[2] / 255), roughness: 0.95, metalness: 0 }));
-    wall.position.set(0, d.wall_y_m, 0.4);
-    wall.rotation.x = Math.PI / 2;               // stand it up, facing -y
-    wall.receiveShadow = true;
-    deskGroup.add(wall);
-  }
+  // No wall. The photographs' desks end 11 to 16 cm behind the pile, and a
+  // vertical plane stood there was a dark slab across half of every
+  // elevated view. The desk continues instead, and the background takes a
+  // light neutral between the desk and what lay beyond it in the photo.
   scene.add(deskGroup);
 }
 
@@ -518,7 +520,7 @@ async function physicsLoop() {
       if (step.length() > maxStep) step.setLength(maxStep);
       drag.follow.add(step);
       const f = springForce(drag.body, wp, drag.follow.toArray());
-      act = [drag.body, wp, f];
+      act = [drag.body, wp, f, true];      // a held grab is a pinch
       actInfo = { kind: "grab", body: drag.body, force: f, point: wp, target: drag.follow.toArray() };
     } else if (flick) {
       // carry the grab point along the flick at its speed, then release
@@ -528,7 +530,7 @@ async function physicsLoop() {
         .applyQuaternion(new THREE.Quaternion(...sim.state.quat[flick.body]))
         .add(new THREE.Vector3(...sim.state.pos[flick.body])).toArray();
       const f = springForce(flick.body, wp, target.toArray());
-      act = [flick.body, wp, f];
+      act = [flick.body, wp, f, true];     // carried on the spring, same
       actInfo = { kind: "flick", body: flick.body, force: f, point: wp, target: target.toArray() };
       if (flick.travelled >= flick.dist) flick = null;
     } else if (dbg.scriptDrag) {
@@ -537,10 +539,18 @@ async function physicsLoop() {
       const wp = new THREE.Vector3(...d.local).applyQuaternion(new THREE.Quaternion(...R))
         .add(new THREE.Vector3(...sim.state.pos[d.body])).toArray();
       const f = springForce(d.body, wp, d.target);
-      act = [d.body, wp, f];
+      act = [d.body, wp, f, true];
       actInfo = { kind: "grab", body: d.body, force: f, point: wp, target: [...d.target], scripted: true };
     }
     try {
+      // The fourth element matters. sim.step's actPinch gates the pinch
+      // damper and both held-speed clamps, and for a long time this call
+      // passed three elements, so none of them ever ran in the browser while
+      // the regression suite, which passes true, kept passing. Measured by
+      // the sensor agent on the live build: a grab with the cursor held
+      // still reared a pencil to 89.9 deg at 3.2 m/s and 60 rad/s, drove it
+      // 31 mm through the table, and left it standing on its end. That was
+      // the rearing, the runaway, and most of the phasing people reported.
       await sim.step(...act);
       diag?.record(actInfo);
       dbg.sensors?.sample(actInfo);

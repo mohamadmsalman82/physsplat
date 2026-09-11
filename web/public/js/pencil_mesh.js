@@ -64,7 +64,10 @@ function barrelColour(colors) {
     if (score > bestScore) { bestScore = score; best = [r, g, b]; }
   }
   if (!best) return [0.7, 0.7, 0.72];
-  const lit = best.map((x) => Math.min(1, (x / 255) * 1.25 + 0.06));
+  // Barely lifted now. The old 1.25x + 0.06 compensated for a scene lit at
+  // a fifth of its proper brightness; under lights that sum to pi on the
+  // desk it turned orange to peach and purple to lavender.
+  const lit = best.map((x) => Math.min(1, (x / 255) * 1.06));
   const hi = Math.max(...lit), lo = Math.min(...lit);
   const sat = hi > 0 ? (hi - lo) / hi : 0;
   const k = 1 + (CHROMA - 1) * Math.max(0, 1 - sat / CHROMA_FADE);

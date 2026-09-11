@@ -31,7 +31,13 @@ const hyp = (v) => Math.hypot(v[0], v[1], v[2]);
 
 async function fresh() {
   const sim = new PhysSim({ kind: "ort", ort, session }, runtime, packet);
-  for (let k = 0; k < 180; k++) await sim.step();     // the page's hidden pre-roll
+  // the page's pre-roll, which is 12 steps now that packets ship settled.
+  // This was 180 when the page's was, and the mismatch mattered: 168 extra
+  // steps of settling changed which body the support-removal check picked
+  // in IMG_8504, from one whose load drops cleanly to one at 18 deg whose
+  // load rides up the incline and lands on a neighbour, higher than it
+  // started, which is what the physics does with that geometry.
+  for (let k = 0; k < 12; k++) await sim.step();
   return sim;
 }
 const lowest = (sim, b) => {
@@ -275,6 +281,28 @@ let deepest = 0;
   }
 }
 check(deepest < 1, `nothing goes through the table while dragging (${deepest.toFixed(2)} mm below it at worst)`);
+
+// ---- 8. hold still: grab the top pencil at its centre and do not move.
+// The force is m*g straight up through the centre of mass, so a rigid body
+// must not rotate. The sensor agent found this reared pencils to 89.9 deg
+// at 3.2 m/s on the live build because the browser never passed actPinch;
+// this check drives the same four-argument call main.js now makes.
+{
+  sim = await fresh();
+  const e0 = elevation(sim, top);
+  let peakTilt = 0, peakSpin = 0, deepest = 0;
+  await drag(sim, top, [0, 0, 0], [0, 0, 0], 1, 300, () => {
+    peakTilt = Math.max(peakTilt, Math.abs(elevation(sim, top) - e0));
+    peakSpin = Math.max(peakSpin, hyp(sim.state.angvel[top]));
+    deepest = Math.max(deepest, -lowest(sim, top) * 1e3);
+  });
+  check(peakTilt < 12,
+    `holding still does not rear the pencil (peak tilt change ${peakTilt.toFixed(1)} deg)`);
+  check(peakSpin < 4,
+    `holding still does not spin the pencil (peak ${peakSpin.toFixed(2)} rad/s)`);
+  check(deepest < 1,
+    `holding still keeps it above the table (${deepest.toFixed(2)} mm below at worst)`);
+}
 
 console.log(fails ? `INTERACTION TESTS FAILED (${fails})` : "INTERACTION TESTS PASSED");
 process.exit(fails ? 1 : 0);

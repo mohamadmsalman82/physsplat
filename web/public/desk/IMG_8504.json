@@ -7,17 +7,22 @@
  "crop_top_px": 1,
  "desk_rgb": [
   182,
-  189,
-  195
+  187,
+  191
+ ],
+ "edge_rgb": [
+  181,
+  185,
+  190
  ],
  "wall_rgb": null,
- "masked_fraction": 0.2154139305816135,
+ "masked_fraction": 0.18456672138836772,
  "orientation": "image right = +x, image up = +y (camera-centric reconstruction frame)",
  "m_per_px": 7.494948813794298e-05,
  "origin_px": [
-  1428.2039696568404,
-  1410.3716137617612
+  1448.8845645282456,
+  1425.5485019335183
  ],
  "pile_area_px": 974111,
- "wall_y_m": 0.1055649760031479
+ "wall_y_m": 0.10670247600314789
 }
