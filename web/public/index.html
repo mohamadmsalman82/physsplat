@@ -72,6 +72,7 @@
 {"imports": {"three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.module.min.js",
              "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
 </script>
-<script type="module" src="./js/main.js"></script>
+<!-- the query is a build stamp: a browser holding a cached main.js after a deploy would otherwise keep old physics -->
+<script type="module" src="./js/main.js?b=202609111406"></script>
 </body>
 </html>

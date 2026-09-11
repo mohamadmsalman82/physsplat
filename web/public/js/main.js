@@ -576,12 +576,25 @@ async function physicsLoop() {
     // fall behind when a step costs more than 1/60 s, which is honest, but
     // it may never get ahead.
     simClock += rt.dt * 1000;
-    const ahead = simClock - (performance.now() - clockStart);
-    if (ahead < -500) { simClock = performance.now() - clockStart; }   // resync after a stall
-    // always yield a real slice to the renderer: the physics kernels share
-    // the GPU with WebGL, and back-to-back steps starve the frame output
-    const wait = Math.max(12, ahead);
-    await yieldSlice(wait);
+    const elapsed = () => performance.now() - clockStart;
+    if (simClock - elapsed() < -500) simClock = elapsed();      // fell behind: resync
+    // And never AHEAD. yieldSlice skips timers in a hidden tab so scripted
+    // probes keep running there, which was harmless while a step cost 33 ms
+    // and the loop could never outrun the wall clock. A rigid-body step
+    // costs 1 to 2 ms, so a hidden tab ran at ten times real time, sim time
+    // raced minutes ahead, and when the tab was shown again the loop waited
+    // for the wall clock to catch up: zero steps, and pencils that could not
+    // be moved. Sim time may lead by at most a frame or two; a hidden tab
+    // paces itself on message ping-pong instead of timers.
+    if (simClock - elapsed() > 40) simClock = elapsed() + 40;
+    if (document.hidden) {
+      while (simClock > elapsed()) await yieldSlice(0);
+    } else {
+      // and a real slice for the renderer: the learned engine's kernels share
+      // the GPU with WebGL and back-to-back steps starve the frame output
+      const floor = sim.backend.kind === "rapier" ? 4 : 12;
+      await yieldSlice(Math.max(floor, simClock - elapsed()));
+    }
   }
   running = false;
 }
