@@ -75,6 +75,9 @@ function meshVertices(group) {
   const v = new THREE.Vector3();
   group.traverse((o) => {
     if (!o.isMesh) return;
+    // the clip stands proud of the surface of revolution on purpose; the
+    // Rapier engine carries it as a collider, the learned engine does not
+    if (o.userData.clip) return;
     const p = o.geometry.getAttribute("position");
     for (let i = 0; i < p.count; i++) {
       v.fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld);

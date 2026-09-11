@@ -5,6 +5,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { PhysSim } from "./sim.js";
+import { RapierSim } from "./rapier_sim.js";
 import { Diagnostics, Probes } from "./diag.js";
 import { Sensors } from "./sensors.js";
 import { buildPencil } from "./pencil_mesh.js";
@@ -593,15 +594,27 @@ async function physicsLoop() {
     // Backend: custom WebGPU kernels (js/gpu_net.js, ~30 ms/step) when
     // WebGPU exists; otherwise ONNX Runtime Web on wasm (correct, slow).
     // ?backend=ort forces the fallback for comparison.
+    // The engine. Rapier, a real rigid-body solver, by default; the learned
+    // graph network behind ?engine=gnn. Both present the same interface, so
+    // everything after this line is the same code. See js/rapier_sim.js for
+    // why the solver is the default.
+    const engine = q.get("engine") === "gnn" ? "gnn" : "rapier";
     let backend = null;
-    if (navigator.gpu && q.get("backend") !== "ort") {
+    if (engine === "rapier") {
+      const mod = await import("../vendor/rapier.mjs");
+      const R = mod.default ?? mod;
+      await R.init();
+      sim = new RapierSim(R, runtime, { bodies: [] });
+      console.log("[physsplat] engine: rapier " + (R.version ? R.version() : ""));
+    }
+    if (engine === "gnn" && navigator.gpu && q.get("backend") !== "ort") {
       try {
         const { GpuNet } = await import("./gpu_net.js");
         const net = await GpuNet.create("./model/weights.json", "./model/weights.bin");
         backend = { kind: "gpu", net };
       } catch (e) { console.warn("[physsplat] WebGPU backend unavailable:", e.message); }
     }
-    if (!backend) {
+    if (engine === "gnn" && !backend) {
       const ortlib = globalThis.ort;
       ortlib.env.wasm.numThreads = Math.min(4, navigator.hardwareConcurrency || 2);
       ortlib.env.wasm.simd = true;
@@ -609,8 +622,10 @@ async function physicsLoop() {
         "./model/simulator.onnx", { executionProviders: ["wasm"] });
       backend = { kind: "ort", ort: ortlib, session };
     }
-    console.log(`[physsplat] backend: ${backend.kind}`);
-    sim = new PhysSim(backend, runtime, { bodies: [] });
+    if (engine === "gnn") {
+      console.log(`[physsplat] backend: ${backend.kind}`);
+      sim = new PhysSim(backend, runtime, { bodies: [] });
+    }
     const names = await (await fetch("./packets/index.json")).json();
     const sel = $("scene");
     names.forEach((n) => sel.add(new Option(n, n)));

@@ -109,26 +109,24 @@ export function buildPencil(body) {
     vertexColors: true, roughness: 0.42, metalness: 0.0, ...extra });
   g.add(new THREE.Mesh(geo, mat()));
 
-  // The clip: a curved shell that follows the barrel, not a flat plate laid
-  // on it. A flat plate tangent to a 4.5 mm cylinder has its corners
-  // sqrt(w^2/4 + r^2) from the axis, which for this clip is 4.92 mm, so a
-  // plate flush at the centre still had 0.42 mm of drawn metal outside the
-  // simulated body along both its edges. Curved, every point of it is at
-  // one radius and that radius is inside the barrel.
+  // The clip stands 1.2 mm proud of the barrel, as the real one does, and
+  // the Rapier collider has the same box in the same place, so a pencil
+  // lying clip-down rests on its clip in the drawing and in the physics
+  // alike. (It is outside the surface of revolution the learned engine
+  // simulates; the mesh test knows to leave it out.)
   const rBarrel = PROFILE[4][1];
-  const clipLen = CLIP_LEN * LENGTH;
+  const clipLen = CLIP_LEN * LENGTH, clipW = CLIP_W * rBarrel * 2, clipT = 0.0020;
   const clipY = -LENGTH / 2 + CLIP_FROM_TOP * LENGTH + clipLen / 2;
-  const arc = CLIP_W;                            // fraction of the way round
-  const shell = new THREE.CylinderGeometry(
-    rBarrel - CLIP_SINK * rBarrel * 0.05, rBarrel - CLIP_SINK * rBarrel * 0.05,
-    clipLen, 20, 1, true, -Math.PI * arc / 2, Math.PI * arc);
-  shell.translate(0, clipY, 0);
-  const cc = new Float32Array(shell.getAttribute("position").count * 3);
+  const plate = new THREE.BoxGeometry(clipW, clipLen, clipT);
+  plate.translate(0, clipY, rBarrel + 0.0012 - clipT / 2);
+  const cc = new Float32Array(plate.getAttribute("position").count * 3);
   for (let i = 0; i < cc.length; i += 3) {
     cc[i] = CLIP_GREY[0]; cc[i + 1] = CLIP_GREY[1]; cc[i + 2] = CLIP_GREY[2];
   }
-  shell.setAttribute("color", new THREE.BufferAttribute(cc, 3));
-  g.add(new THREE.Mesh(shell, mat({ roughness: 0.45, side: THREE.DoubleSide })));
+  plate.setAttribute("color", new THREE.BufferAttribute(cc, 3));
+  const clip = new THREE.Mesh(plate, mat({ roughness: 0.45 }));
+  clip.userData.clip = true;
+  g.add(clip);
 
   // Built along +y with the point at +y; turn that onto the body's axis,
   // which the packet guarantees points at the lead. Do NOT re-decide the
