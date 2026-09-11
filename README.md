@@ -62,6 +62,8 @@ a frame not to sink into the pile.
 
 ## The interface
 
+![The PhysSplat interface: a top bar with four scene thumbnails and the engine badge; five simulated pencils on the photographed desk with a label over each one and yellow dots where they touch; a card for the selected pencil reading at rest, 0.5° from flat, on the desk, resting on the desk, carrying pencil 3; the Display tab of the dock with its toggles; the transport bar reading Rapier, 1.2 ms per step, real time.](docs/img/ui.png)
+
 The page is a sandbox, not a viewer. The top bar picks a scene from photo
 thumbnails and shows which engine is running; the dock on the right has five
 tabs:

@@ -32,7 +32,7 @@
  *   diff(a, b)       what changed between two recorded steps
  */
 import { capsuleClosest, capsuleWorld, lowestSurface, quatToMatrix } from "./physics.js";
-import { LENGTH, PROFILE, radiusAtOffset } from "./pencil.js";
+import { LENGTH, PROFILE, radiusAt, radiusAtOffset } from "./pencil.js";
 
 /**
  * Named regions of the pencil, as fractions of its length from the eraser.
@@ -170,6 +170,8 @@ export class Sensors {
           upper: above,
           lower: above === null ? null : (above === i ? j : i),
           world: c.ca.map((x) => r2(x * 1000)),
+          // the seam itself: midway between the two surfaces (n points j -> i)
+          surface: [0, 1, 2].map((k) => r2(((c.ca[k] - c.n[k] * radiusAt(ti)) + (c.cb[k] + c.n[k] * radiusAt(tj))) * 500)),
           closing_mms: r2(-vn * 1000),
           sliding_mms: r2(vt * 1000),
         });
@@ -190,6 +192,7 @@ export class Sensors {
         upper: b,
         lower: "table",
         world: g.world.map((x) => r2(x * 1000)),
+        surface: [r2(g.world[0] * 1000), r2(g.world[1] * 1000), Math.max(0, g.gap_mm)],
         closing_mms: r2(-st.linvel[b][2] * 1000),
         sliding_mms: r2(Math.hypot(st.linvel[b][0], st.linvel[b][1]) * 1000),
       });

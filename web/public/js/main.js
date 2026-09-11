@@ -327,9 +327,11 @@ function spawnPencil(colorHex) {
 // overlays: contact points, velocity arrows, collider outlines
 const overlay = { contacts: new THREE.Group(), velocities: new THREE.Group(), colliders: new THREE.Group() };
 Object.values(overlay).forEach((g) => { g.visible = false; scene.add(g); });
-const contactGeo = new THREE.SphereGeometry(0.0022, 10, 8);
-const contactMat = new THREE.MeshBasicMaterial({ color: 0xffcf6b });
-const contactPenMat = new THREE.MeshBasicMaterial({ color: 0xff7b7b });
+// drawn on top of everything: a seam between two pencils is hidden by both
+const contactGeo = new THREE.SphereGeometry(0.0018, 12, 10);
+const contactMat = new THREE.MeshBasicMaterial({ color: 0xffcf6b, depthTest: false, depthWrite: false });
+const contactPenMat = new THREE.MeshBasicMaterial({ color: 0xff5f5f, depthTest: false, depthWrite: false });
+overlay.contacts.renderOrder = 10;
 let overlayTick = 0;
 function updateOverlays() {
   if (!sim || !dbg.sensors) return;
@@ -338,7 +340,9 @@ function updateOverlays() {
     for (const c of dbg.sensors.touch()) {
       if (!c.touching && c.pen_mm <= 0) continue;
       const m = new THREE.Mesh(contactGeo, c.pen_mm > 0.3 ? contactPenMat : contactMat);
-      m.position.set(c.world[0] / 1000, c.world[1] / 1000, c.world[2] / 1000);
+      const w = c.surface ?? c.world;
+      m.position.set(w[0] / 1000, w[1] / 1000, w[2] / 1000);
+      m.renderOrder = 10;
       g.add(m);
     }
   }

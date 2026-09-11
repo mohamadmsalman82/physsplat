@@ -283,7 +283,9 @@ export function initUI(app) {
       el("div", { class: "kv" },
         el("span", {}, "state"), el("span", {}, b.moving ? `moving, ${fmt(b.speed_mms, 1)} mm/s` : (b.held_still ? "at rest" : "settling")),
         el("span", {}, "tilt"), el("span", {}, `${fmt(b.elevation_deg, 1)}° from flat`),
-        el("span", {}, "height"), el("span", {}, `${fmt(Math.abs(b.floor.gap_mm) < 0.1 ? 0 : b.floor.gap_mm, 2)} mm above the desk, on its ${b.floor.at.region}`),
+        el("span", {}, "height"), el("span", {}, b.floor.gap_mm <= 0.3
+          ? `on the desk, lowest point its ${b.floor.at.region}`
+          : `${fmt(b.floor.gap_mm, 1)} mm above the desk, lowest point its ${b.floor.at.region}`),
         el("span", {}, "resting on"), el("span", {}, rest),
         el("span", {}, "carrying"), el("span", {}, b.carrying.length ? b.carrying.map((c) => `pencil ${c}`).join(", ") : "—"),
         el("span", {}, "spin"), el("span", {}, `${fmt(b.spin_rads, 2)} rad/s`)),
@@ -304,15 +306,26 @@ export function initUI(app) {
     const n = app.bodyCount;
     while (labelEls.length < n) { const d = el("div", { class: "label" }); labels.append(d); labelEls.push(d); }
     while (labelEls.length > n) labelEls.pop().remove();
-    for (let i = 0; i < n; i++) {
-      const p = app.project(i);
+    // place, then push any label that would sit on another one downwards
+    const placed = [];
+    const order = Array.from({ length: n }, (_, i) => i).map((i) => ({ i, p: app.project(i) }))
+      .sort((a, b) => a.p.y - b.p.y);
+    for (const { i, p } of order) {
       const d = labelEls[i];
       d.hidden = !p.visible;
       if (!p.visible) continue;
-      d.style.left = `${p.x}px`; d.style.top = `${p.y}px`;
-      d.classList.toggle("sel", app.selected === i);
       const b = app.bodyInfo(i);
-      d.textContent = `${i}  ${fmt(b.elevation_deg, 0)}°  ${b.moving ? fmt(b.speed_mms, 0) + " mm/s" : "rest"}`;
+      d.textContent = `Pencil ${i} · ${fmt(b.elevation_deg, 0)}° · ${b.moving ? fmt(b.speed_mms, 0) + " mm/s" : "rest"}`;
+      d.classList.toggle("sel", app.selected === i);
+      const w = d.offsetWidth || 96, h = (d.offsetHeight || 20) + 4;
+      let y = p.y;
+      for (let guard = 0; guard < 8; guard++) {
+        const hit = placed.find((q) => Math.abs(q.x - p.x) < (q.w + w) / 2 && Math.abs(q.y - y) < h);
+        if (!hit) break;
+        y = hit.y + h;
+      }
+      placed.push({ x: p.x, y, w });
+      d.style.left = `${p.x}px`; d.style.top = `${y}px`;
     }
   };
   app.onFrame(paintLabels);
