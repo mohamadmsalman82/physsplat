@@ -1,0 +1,27 @@
+{
+ "image": "IMG_8596.jpg",
+ "image_px": [
+  3024,
+  4032
+ ],
+ "crop_top_px": 321,
+ "desk_rgb": [
+  197,
+  200,
+  198
+ ],
+ "wall_rgb": [
+  87,
+  92,
+  101
+ ],
+ "masked_fraction": 0.3730243886907794,
+ "orientation": "image right = +x, image up = +y (camera-centric reconstruction frame)",
+ "m_per_px": 6.856866639247107e-05,
+ "origin_px": [
+  1760.0588643431254,
+  1908.55714504705
+ ],
+ "pile_area_px": 1163843,
+ "wall_y_m": 0.10883610565779724
+}

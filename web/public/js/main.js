@@ -9,6 +9,7 @@ import { Diagnostics, Probes } from "./diag.js";
 import { Sensors } from "./sensors.js";
 import { buildPencil } from "./pencil_mesh.js";
 import { grabForce } from "./physics.js";
+import { setupCamera } from "./camera.js";
 
 const $ = (id) => document.getElementById(id);
 const err = (m) => { $("err").textContent = String(m); console.error(m); };
@@ -26,26 +27,41 @@ document.body.appendChild(renderer.domElement);
 const CAM_HOME = { pos: [0.16, -0.26, 0.2], target: [0, 0, 0.015] };
 const controls = new OrbitControls(cam, renderer.domElement);
 controls.target.set(...CAM_HOME.target);
-controls.rotateSpeed = 0.55;
-controls.zoomSpeed = 0.9;
-controls.enableDamping = true;
-controls.dampingFactor = 0.12;
-controls.minDistance = 0.1;
-controls.maxDistance = 0.9;
-controls.minPolarAngle = 0.35;          // keep a usable elevated view
-controls.maxPolarAngle = 1.25;          // never near the floor plane
+// limits, buttons, keys, double-click framing and eased moves all live in
+// js/camera.js; `proxies` and `sim` are read lazily, after they exist
+const camera = setupCamera({
+  cam, controls, dom: renderer.domElement,
+  getProxies: () => proxies,
+  homeAzimuth: () => (sim?.packet?.bodies?.length ? bestAzimuth(sim.packet) : -1.0),
+  target: CAM_HOME.target,
+});
+// A pencil claims the LEFT button before OrbitControls sees the press.
+// Capture-phase listeners on the target run first, so by the time
+// OrbitControls reads mouseButtons.LEFT it is no longer a rotate, and the
+// right button, the middle button and the wheel keep working mid-drag.
+renderer.domElement.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0 || !sim) return;
+  ray.setFromCamera(ndc(e), cam);
+  if (ray.intersectObjects(proxies, true).length) camera.holdingPencil(true);
+}, true);
 const Q = new URLSearchParams(location.search);
 renderer.shadowMap.enabled = Q.get("shadows") !== "0";
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-scene.add(new THREE.AmbientLight(0xffffff, 0.55));
-scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x2a2622, 0.5));
-const sun = new THREE.DirectionalLight(0xffffff, 1.6);
-sun.position.set(0.35, -0.45, 0.9);
+// Lighting to match the photographs: a white desk under soft daylight from
+// the upper left, with the pencils' shadows falling to the lower right and
+// a lot of bounce off the desk. The previous warm key light and dark
+// background were the look of a wooden table in a void, not of this desk.
+const ambient = new THREE.AmbientLight(0xffffff, 0.75);
+const hemi = new THREE.HemisphereLight(0xffffff, 0xc8c8cc, 0.55);
+scene.add(ambient, hemi);
+const sun = new THREE.DirectionalLight(0xffffff, 1.35);
+sun.position.set(-0.35, 0.30, 0.85);         // upper left, slightly behind
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.near = 0.1; sun.shadow.camera.far = 3;
 sun.shadow.camera.left = sun.shadow.camera.bottom = -0.4;
 sun.shadow.camera.right = sun.shadow.camera.top = 0.4;
+sun.shadow.radius = 4;                        // the photo's shadows are soft
 // normalBias offsets the shadow lookup along the surface normal, so it has
 // to be small next to the object: 20 mm on a 4.5 mm pencil detached every
 // shadow from its caster (a blind tester saw "wrongly shaped streaks that
@@ -54,12 +70,83 @@ sun.shadow.camera.right = sun.shadow.camera.top = 0.4;
 sun.shadow.bias = -0.0001;
 sun.shadow.normalBias = 0.0015;
 scene.add(sun);
-// a lit wooden table, not a dark grid in a void
-const ground = new THREE.Mesh(
-  new THREE.CircleGeometry(0.6, 64),
-  new THREE.MeshStandardMaterial({ color: 0x8a6f4e, roughness: 0.75, metalness: 0 }));
-ground.receiveShadow = true;
-scene.add(ground);
+
+// The desk is the desk in the photograph. scripts/desk_texture.py lifts it
+// out of each scene's photo with the pencils and their shadows removed and
+// writes where it sits in the world; loadDesk() lays that image on the
+// table at that scale, extends it with the desk's own colour beyond the
+// photo's edge, stands a wall where the photo has one, and paints the
+// background to match, so the scene is the photo with the pencils alive.
+let deskGroup = null;
+const deskBase = new THREE.Mesh(
+  new THREE.PlaneGeometry(4, 4),
+  new THREE.MeshStandardMaterial({ color: 0xbcbfc2, roughness: 0.9, metalness: 0 }));
+deskBase.receiveShadow = true;
+scene.add(deskBase);
+scene.background = new THREE.Color(0x9a9ea3);
+
+/** A soft-edged alpha so the photo fades into the plain desk around it. */
+function featherAlpha(w, h, feather = 0.12) {
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const g = c.getContext("2d");
+  const img = g.createImageData(w, h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const fx = Math.min(x, w - 1 - x) / (w * feather);
+    const fy = Math.min(y, h - 1 - y) / (h * feather);
+    const a = Math.min(1, fx, fy);
+    const s = a * a * (3 - 2 * a);               // smoothstep
+    const i = 4 * (y * w + x);
+    img.data[i] = img.data[i + 1] = img.data[i + 2] = 255 * s;
+    img.data[i + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c);
+  return t;
+}
+
+async function loadDesk(name) {
+  if (deskGroup) { scene.remove(deskGroup); deskGroup = null; }
+  let d = null;
+  try {
+    const r = await fetch(`./desk/${name}.json`, { cache: "no-cache" });
+    if (r.ok) d = await r.json();
+  } catch (e) { /* no desk for this scene: the plain base stays */ }
+  const deskRgb = d?.desk_rgb ?? [188, 191, 194];
+  deskBase.material.color.setRGB(deskRgb[0] / 255, deskRgb[1] / 255, deskRgb[2] / 255);
+  hemi.groundColor.copy(deskBase.material.color);
+  const wallRgb = d?.wall_rgb ?? [150, 154, 160];
+  scene.background.setRGB(wallRgb[0] / 255, wallRgb[1] / 255, wallRgb[2] / 255);
+  if (!d || !d.m_per_px) return;
+  deskGroup = new THREE.Group();
+  const [W, H] = d.image_px, top = d.crop_top_px ?? 0;
+  const w = W * d.m_per_px, h = (H - top) * d.m_per_px;
+  const tex = await new THREE.TextureLoader().loadAsync(`./desk/${d.image}`);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  const photo = new THREE.Mesh(
+    new THREE.PlaneGeometry(w, h),
+    new THREE.MeshStandardMaterial({
+      map: tex, alphaMap: featherAlpha(256, Math.round(256 * h / w)),
+      transparent: true, roughness: 0.9, metalness: 0 }));
+  // image right is +x and image up is +y (see desk_texture.py); place the
+  // photo so its origin pixel sits at the world origin
+  const cx = W / 2, cy = top + (H - top) / 2;
+  photo.position.set((cx - d.origin_px[0]) * d.m_per_px, -(cy - d.origin_px[1]) * d.m_per_px, 0.00005);
+  photo.receiveShadow = true;
+  deskGroup.add(photo);
+  if (d.wall_rgb && Number.isFinite(d.wall_y_m)) {
+    const wall = new THREE.Mesh(
+      new THREE.PlaneGeometry(4, 0.8),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(
+        wallRgb[0] / 255, wallRgb[1] / 255, wallRgb[2] / 255), roughness: 0.95, metalness: 0 }));
+    wall.position.set(0, d.wall_y_m, 0.4);
+    wall.rotation.x = Math.PI / 2;               // stand it up, facing -y
+    wall.receiveShadow = true;
+    deskGroup.add(wall);
+  }
+  scene.add(deskGroup);
+}
 
 // ---------------------------------------------------------------- runtime
 let sim = null, groups = [], proxies = [], loading = false;
@@ -162,6 +249,7 @@ async function loadScene(name) {
   });
   syncTransforms();
   resetCamera();
+  loadDesk(name);                       // the photo's own desk, asynchronously
   // A reconstructed pile is not exactly in equilibrium (single-view depth
   // error), and the physics rules move it into one during the first few
   // steps. Run those steps before showing motion, so the scene appears
@@ -278,7 +366,7 @@ renderer.domElement.addEventListener("pointerdown", (e) => {
   ray.setFromCamera(ndc(e), cam);
   const hits = ray.intersectObjects(proxies, true);
   if (!hits.length) return;
-  controls.enabled = false;
+  if (e.button !== 0) return;                 // right and middle stay the camera's
   const body = hits[0].object.parent.userData.body;
   // grab point in body frame, so it rides the body. Attach ON the pencil's
   // axis: the pick volume is wider than the pencil, and a spring pulling
@@ -357,10 +445,10 @@ renderer.domElement.addEventListener("pointerup", () => {
     diag?.event("grab_end", { body: drag.body, held_ms: Math.round(performance.now() - drag.t0) });
   }
   drag = null;
-  controls.enabled = true;
+  camera.holdingPencil(false);
 });
-renderer.domElement.addEventListener("pointercancel", () => { drag = null; controls.enabled = true; });
-renderer.domElement.addEventListener("pointerleave", () => { if (drag) { drag = null; controls.enabled = true; } });
+renderer.domElement.addEventListener("pointercancel", () => { drag = null; camera.holdingPencil(false); });
+renderer.domElement.addEventListener("pointerleave", () => { if (drag) { drag = null; camera.holdingPencil(false); } });
 
 function resetScene() {
   if (!sim) return;
@@ -603,6 +691,7 @@ addEventListener("resize", () => {
 });
 (function render() {
   requestAnimationFrame(render);
+  camera.update();                 // keys and eased moves, before damping
   controls.update();
   renderInterpolated();
   renderer.render(scene, cam);

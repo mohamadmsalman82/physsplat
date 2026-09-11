@@ -1,0 +1,23 @@
+{
+ "image": "IMG_8626.jpg",
+ "image_px": [
+  3024,
+  4032
+ ],
+ "crop_top_px": 0,
+ "desk_rgb": [
+  191,
+  194,
+  193
+ ],
+ "wall_rgb": null,
+ "masked_fraction": 0.25539029535864977,
+ "orientation": "image right = +x, image up = +y (camera-centric reconstruction frame)",
+ "m_per_px": 7.988936551947894e-05,
+ "origin_px": [
+  1473.2272316345966,
+  2020.8906141733473
+ ],
+ "pile_area_px": 1071712,
+ "wall_y_m": 0.16144766895057883
+}

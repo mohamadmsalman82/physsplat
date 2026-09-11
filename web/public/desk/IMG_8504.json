@@ -1,0 +1,23 @@
+{
+ "image": "IMG_8504.jpg",
+ "image_px": [
+  3024,
+  4032
+ ],
+ "crop_top_px": 1,
+ "desk_rgb": [
+  182,
+  189,
+  195
+ ],
+ "wall_rgb": null,
+ "masked_fraction": 0.2154139305816135,
+ "orientation": "image right = +x, image up = +y (camera-centric reconstruction frame)",
+ "m_per_px": 7.494948813794298e-05,
+ "origin_px": [
+  1428.2039696568404,
+  1410.3716137617612
+ ],
+ "pile_area_px": 974111,
+ "wall_y_m": 0.1055649760031479
+}
