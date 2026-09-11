@@ -27,3 +27,4 @@ web/.next/
 .DS_Store
 third_party/
 web/public/model/
+.vercel

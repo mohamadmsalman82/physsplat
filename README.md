@@ -1,44 +1,141 @@
 # PhysSplat
 
+![Left: a photograph of four BIC Matic Grip mechanical pencils lying in a lattice on a table. Right: the same four pencils reconstructed to 3D and simulated in the browser, from the same viewpoint.](docs/img/real-vs-sim.png)
+
 **A photo of everyday objects in. Interactive, learned 3D physics in your browser out.**
 
-**Live demo: [physsplat.vercel.app](https://physsplat.vercel.app)** (physics runs entirely in your browser; drag a pencil to grab it, flick to poke)
+### [Open the live demo →](https://physsplat.vercel.app)
 
-PhysSplat turns a single photograph of simple objects on a flat surface (pencils today; the pipeline is object-agnostic) into a fully interactive 3D simulation. The scene is reconstructed to 3D, decomposed into rigid bodies without supervision, and simulated by a graph neural network trained entirely on synthetic data, with no hand-coded collision solver. You orbit the scene, grab and poke objects with the mouse, and watch them slide, pivot, and topple, with every physics step running client-side in the browser.
+Drag a pencil to grab it, flick to poke, scroll or drag empty space to orbit.
+Every physics step runs client-side; there is no server in the loop.
+
+[![live demo](https://img.shields.io/badge/demo-physsplat.vercel.app-2ea44f)](https://physsplat.vercel.app)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-3776ab)](pyproject.toml)
+[![WebGPU](https://img.shields.io/badge/runtime-WebGPU-005a9c)](web/public/js)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+PhysSplat turns a single photograph of simple objects on a flat surface (pencils
+today; the pipeline is object-agnostic) into a fully interactive 3D simulation.
+The scene is reconstructed to 3D, decomposed into rigid bodies without
+supervision, and simulated by a graph neural network trained entirely on
+synthetic data, with no hand-coded collision solver. You orbit the scene, grab
+and poke objects with the mouse, and watch them slide, pivot, and topple.
 
 ```
-photo ──► single-image 3D    ──► unsupervised object          ──► learned GNN ──► interactive
-          reconstruction         decomposition + particles        dynamics         three.js demo
-          (TripoSR)              once per scene                   in-browser, custom WebGPU kernels
+photo ──► single-image 3D ──► unsupervised object ──► learned GNN ──► interactive
+.jpg      reconstruction      decomposition           dynamics        three.js demo
+          (TripoSR)           + particle sampler      (per body)      custom WebGPU
+          └────────── once, per scene ──────────┘     └─ every frame, in-browser ─┘
 ```
 
 ## Why
 
-Generative 3D reconstruction produces photorealistic scenes that are physically inert — no mass, no contact, no gravity. Classical physics engines simulate rigid bodies robustly but require clean meshes and hand-tuned parameters, so they cannot ingest a photograph. PhysSplat bridges the two with a learned simulator that operates on surface point clouds: exactly the representation a photo reconstruction can provide.
+Generative 3D reconstruction produces photorealistic scenes that are physically
+inert — no mass, no contact, no gravity. Classical physics engines simulate rigid
+bodies robustly but require clean meshes and hand-tuned parameters, so they
+cannot ingest a photograph. PhysSplat bridges the two with a learned simulator
+that operates on surface point clouds: exactly the representation a photo
+reconstruction can provide.
 
 ## How it works
 
 Three ideas carry the project:
 
-1. **Rigidity by construction.** The GNN detects contact through particle-level message passing, but decodes one linear + one angular acceleration *per body* and integrates on SE(3), so objects can never deform or "melt" over long rollouts.
-2. **Noise injection.** Training inputs are corrupted with small random-walk noise against clean targets, so the model learns to correct its own errors — the difference between rollouts that drift in seconds and rollouts that stay plausible indefinitely.
-3. **One shared sampler.** The exact same fixed-spacing surface sampler dots synthetic training objects and photo-reconstructed objects with physics particles, making real scenes statistically indistinguishable from training data. That is the whole sim-to-real transfer mechanism.
+1. **Rigidity by construction.** The GNN detects contact through particle-level
+   message passing, but decodes one linear + one angular acceleration *per body*
+   and integrates on SE(3), so objects can never deform or "melt" over long
+   rollouts.
+2. **Noise injection.** Training inputs are corrupted with small random-walk
+   noise against clean targets, so the model learns to correct its own errors —
+   the difference between rollouts that drift in seconds and rollouts that stay
+   plausible indefinitely.
+3. **One shared sampler.** The exact same fixed-spacing surface sampler dots
+   synthetic training objects and photo-reconstructed objects with physics
+   particles, making real scenes statistically indistinguishable from training
+   data. That is the whole sim-to-real transfer mechanism.
 
-Training data is manufactured, not collected: PyBullet simulates thousands of randomized scenes (stacks, scatters, drops, random pokes) and the network learns to imitate it — from a photo-compatible representation.
+Training data is manufactured, not collected: PyBullet simulates thousands of
+randomized scenes (stacks, scatters, drops, random pokes) and the network learns
+to imitate it — from a photo-compatible representation.
+
+## What makes this hard
+
+None of the interesting failures show up in a single-step loss. A learned
+simulator is only as good as its worst rollout, so the project is built around a
+scorecard rather than a training curve:
+
+| failure mode | metric | best run (63.6) |
+|---|---|---|
+| drift over a rollout | `trans_150` — translation error after 150 steps | 1.9 cm |
+| bodies sinking into each other | `surface_pen` — worst surface penetration | 1.50 mm |
+| settled piles creeping | `stability` — fraction of settled scenes that stay settled | 0.83 |
+| what is resting on what | `support_jaccard` — contact set vs ground truth | 0.60 |
+
+Then there are the failures a metric never sees, which is what the blind-tester
+ledger is for ([`docs/demo-critic.md`](docs/demo-critic.md)). A human playing the
+demo caught things six automated rounds had not isolated: jitter under a moving
+cursor, pencils hovering and sinking because the drawn barrel and the simulated
+body disagreed about the surface by 1.7 mm, and tunnelling under fast pulls and
+high drops. Every fix is pinned by a headless regression test that drives the
+browser simulator with no page (`web/test/rest.mjs`, `web/test/interact.mjs`).
 
 ## What the network is not allowed to claim
 
-A learned simulator run far outside its training distribution (photo-reconstructed pencils, not PyBullet capsules) will assert things that are not physics. Rather than hide that, the demo states the invariants explicitly and lets the diagnostics show when they bind:
+A learned simulator run far outside its training distribution (photo-reconstructed
+pencils, not PyBullet capsules) will assert things that are not physics. Rather
+than hide that, the demo states the invariants explicitly and lets the
+diagnostics show when they bind:
 
-- **Free flight.** A body touching nothing feels only gravity and the applied force, so its learned residual is zero. Without this a released pencil hovered: the network had never seen a motionless unsupported body.
-- **Support and pivot.** Support is counted only from below; a body whose centre of mass is outside its support polygon swings about the nearest support edge until it lies flat, instead of balancing on its end.
-- **No free energy — written, measured, and turned off.** Contact with static things cannot add mechanical energy, and an applied force adds only the work it does. Each step is trial-integrated and the residual scaled down if it would break that. It fixes what it was written for (a resting pencil reared to 89° on its own) and still costs more than it buys: 42.4 composite against 62.3 for free flight alone, because a rule that cannot separate a spurious energy gain from a real one also damps genuine collision response. The rearing is prevented by support-and-pivot instead. It stays behind `--energy` so the number is reproducible.
+- **Free flight.** A body touching nothing feels only gravity and the applied
+  force, so its learned residual is zero. Without this a released pencil
+  hovered: the network had never seen a motionless unsupported body.
+- **Support and pivot.** Support is counted only from below; a body whose centre
+  of mass is outside its support polygon swings about the nearest support edge
+  until it lies flat, instead of balancing on its end.
+- **No free energy — written, measured, and turned off.** Contact with static
+  things cannot add mechanical energy, and an applied force adds only the work it
+  does. Each step is trial-integrated and the residual scaled down if it would
+  break that. It fixes what it was written for (a resting pencil reared to 89° on
+  its own) and still costs more than it buys, because a rule that cannot separate
+  a spurious energy gain from a real one also damps genuine collision response.
+  The rearing is prevented by support-and-pivot instead. It stays behind
+  `--energy` so the number is reproducible.
 
-Everything these rules do is recorded per step and visible in the diagnostics, so a reader can always tell the model's answer from the correction ([`docs/diagnostics.md`](docs/diagnostics.md)). `scripts/evaluate.py` exposes each rule as a flag, so every one of them was scored on the synthetic test set before being kept or dropped — two were dropped.
+`scripts/evaluate.py` exposes every rule as a flag, so each one was scored on the
+synthetic test set before being kept or dropped. Two were dropped — the energy
+rule, tried twice, and residual smoothing:
+
+| analytic rule | composite | verdict |
+|---|---|---|
+| *learned model alone* | 61.0 | baseline |
+| free flight — zero residual for a body touching nothing | 62.3 | **kept** |
+| angular contact fade — torque vanishes as a body separates | 63.6 | **kept** |
+| no free energy, whole scene every step | 42.4 | rejected — cuts contact impulses |
+| no free energy, quiescent bodies only | 48.1 | rejected — still biases resting contact down |
+| two-tap residual mean | 34.2 | rejected — delays the contact response |
+
+Composite is 0–100 on the synthetic test set; the energy and smoothing rows are
+measured on top of free flight. Everything these rules do is recorded per step
+and visible in the diagnostics, so a reader can always tell the model's answer
+from the correction ([`docs/diagnostics.md`](docs/diagnostics.md)).
+
+## Documentation
+
+| document | what it covers |
+|---|---|
+| [`docs/PhysSplat.pdf`](docs/PhysSplat.pdf) | the design document: architecture, the mathematics of the learned simulator, data spec, evaluation plan |
+| [`docs/PhysSplat-Tutorial.pdf`](docs/PhysSplat-Tutorial.pdf) | a 70-step build guide with background theory, per-step checkpoints, and common traps |
+| [`docs/diagnostics.md`](docs/diagnostics.md) | the demo's diagnostic API: per-step motion and contact data, anomaly detectors, scripted probes |
+| [`docs/demo-critic.md`](docs/demo-critic.md) | the blind-tester ledger: what each round scored, what it measured, and what changed |
+| [`eval/REPORT.md`](eval/REPORT.md) | the scorecard itself, with the accept/reject decision for every experiment |
 
 ## Status
 
-Early development, built in phases (each ends with a runnable artifact):
+Early development, built in phases — each ends with a runnable artifact. Phases
+0 through 8 are complete.
+
+<details>
+<summary><b>The phase list</b></summary>
 
 - [x] **Phase 0** — environment, package skeleton, shared constants
 - [x] **Phase 1** — synthetic dataset generator (PyBullet → HDF5): 5,000 trajectories across 7 scene regimes with a poke-and-grab action channel, physics-invariant rejection filters, and visual audit tooling
@@ -47,17 +144,13 @@ Early development, built in phases (each ends with a runnable artifact):
 - [x] **Phase 4** — extensive rollout scorecard (drift, penetration, rest stability, support-removal fidelity, energy) with per-regime breakdown, provenance ledger, and side-by-side films
 - [x] **Phase 5** — local interactive demo (WebSocket server + three.js client, closed-loop spring grabs)
 - [x] **Phase 6** — photo → scene pipeline: TripoSR reconstruction, RANSAC line segmentation of pencils, four real-photo scenes packeted
-- [x] **Phase 7** — in-browser physics: race-free ONNX export, JS runtime parity-verified to microns against Python, then a custom WebGPU backend (hand-written WGSL kernels, ~7x faster than ONNX Runtime Web) so a 4-5 pencil scene steps at 12-16 Hz on an M-series laptop
-- [x] **Phase 8** — public deployment on Vercel, plus a blind-tester loop: an independent agent plays the live demo, scores it harshly, and its findings drive the next round of fixes (`docs/demo-critic.md`). Six rounds so far, plus reports from a human playing it, which caught things the automated rounds had not isolated: jitter under a moving cursor, pencils hovering and sinking because the drawn barrel and the simulated body disagreed about the surface by 1.7 mm, and tunnelling under fast pulls and high drops. Every fix is covered by a headless regression test that drives the browser simulator with no page (`web/test/rest.mjs`, `web/test/interact.mjs`), and every analytic rule was scored on the synthetic test set before being kept or dropped.
+- [x] **Phase 7** — in-browser physics: race-free ONNX export, JS runtime parity-verified to microns against Python, then a custom WebGPU backend (five hand-written WGSL kernels in one compute pass; ONNX Runtime Web's WebGPU provider measured 190-490 ms/step on the same model) so a 4-5 pencil scene steps in 15-24 ms on an M-series laptop, real time on a visible tab
+- [x] **Phase 8** — public deployment on Vercel, plus a blind-tester loop: an independent agent plays the live demo, scores it harshly, and its findings drive the next round of fixes (`docs/demo-critic.md`). Six rounds so far, plus reports from a human playing it, which caught things the automated rounds had not isolated
 
-## Documentation
+</details>
 
-- [`docs/PhysSplat.pdf`](docs/PhysSplat.pdf) — the design document: full architecture, the mathematics of the learned simulator, data spec, evaluation plan.
-- [`docs/PhysSplat-Tutorial.pdf`](docs/PhysSplat-Tutorial.pdf) — a 70-step build guide with background theory, per-step checkpoints, and common traps.
-- [`docs/diagnostics.md`](docs/diagnostics.md) — the demo's diagnostic API: per-step motion and contact data, anomaly detectors, and scripted probes that measure grabs, drops and support removal.
-- [`docs/demo-critic.md`](docs/demo-critic.md) — the blind-tester ledger: what each round scored, what it measured, and what changed.
-
-## Repository layout
+<details>
+<summary><b>Repository layout</b></summary>
 
 ```
 src/physsplat/
@@ -75,6 +168,8 @@ docs/         design document and build tutorial (LaTeX + PDF)
 ```
 
 Each package's `__init__.py` documents what lives there and why.
+
+</details>
 
 ## Setup
 
