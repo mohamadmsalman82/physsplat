@@ -210,6 +210,13 @@ def main():
         out_h = int(clean.shape[0] * OUT_W / clean.shape[1])
         Image.fromarray(clean).resize((OUT_W, out_h), Image.LANCZOS).save(
             OUT / f"{scene}.jpg", quality=88, optimize=True)
+        # the same crop of the ORIGINAL photograph, pencils and all, for the
+        # demo's "compare with the photo" view, and a thumbnail for the scene
+        # picker
+        Image.fromarray(desk).resize((OUT_W, out_h), Image.LANCZOS).save(
+            OUT / f"{scene}_photo.jpg", quality=86, optimize=True)
+        thumb = Image.fromarray(rgb); thumb.thumbnail((320, 320))
+        thumb.save(OUT / f"{scene}_thumb.jpg", quality=82, optimize=True)
         avg = clean[~mask].reshape(-1, 3).mean(0)
         b = max(8, clean.shape[0] // 12)
         border = np.concatenate([clean[:b].reshape(-1, 3), clean[-b:].reshape(-1, 3),

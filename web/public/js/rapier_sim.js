@@ -156,8 +156,9 @@ export class RapierSim {
 
     // the desk: a slab whose top face is z = 0
     const desk = this.world.createRigidBody(R.RigidBodyDesc.fixed().setTranslation(0, 0, -5));
-    this.world.createCollider(
-      R.ColliderDesc.cuboid(500, 500, 5).setFriction(FRICTION_DESK).setRestitution(RESTITUTION_DESK), desk);
+    this.deskCollider = this.world.createCollider(
+      R.ColliderDesc.cuboid(500, 500, 5).setFriction(this.fDesk ?? FRICTION_DESK).setRestitution(RESTITUTION_DESK), desk);
+    if (this.gravityScale && this.gravityScale !== 1) this.world.gravity = { x: 0, y: 0, z: -9.81 * CM * this.gravityScale };
 
     this.bodies = [];
     this.colliders = [];
@@ -176,8 +177,8 @@ export class RapierSim {
         const cd = R.ColliderDesc.convexHull(hullPoints(t0, t1));
         if (!cd) continue;
         cd.setDensity(DENSITY / (CM * CM * CM))       // kg/m^3 -> kg/cm^3
-          .setFriction(FRICTION_PENCIL)
-          .setRestitution(RESTITUTION_PENCIL);
+          .setFriction(this.fPencil ?? FRICTION_PENCIL)
+          .setRestitution(this.rest ?? RESTITUTION_PENCIL);
         cols.push(this.world.createCollider(cd, body));
       }
       {
@@ -319,6 +320,96 @@ export class RapierSim {
       N: this.N, E, backend: "rapier" };
     this.stepCount++;
     return this.state;
+  }
+
+  // ------------------------------------------------------ live controls
+  // Things a person playing with the scene can turn: all take effect on
+  // the next step, none rebuild the world.
+
+  /** Current tunables, for a UI to display. */
+  get params() {
+    return {
+      gravity: this.gravityScale ?? 1,
+      frictionPencil: this.fPencil ?? FRICTION_PENCIL,
+      frictionDesk: this.fDesk ?? FRICTION_DESK,
+      restitution: this.rest ?? RESTITUTION_PENCIL,
+    };
+  }
+
+  /** Gravity as a multiple of 9.81 m/s^2 (0 = weightless, 2 = twice Earth). */
+  setGravityScale(g) {
+    this.gravityScale = g;
+    this.world.gravity = { x: 0, y: 0, z: -9.81 * CM * g };
+    for (const b of this.bodies) b.wakeUp();
+  }
+
+  /** Coulomb friction for pencil colliders and for the desk. */
+  setFriction(pencil, desk = this.fDesk ?? FRICTION_DESK) {
+    this.fPencil = pencil; this.fDesk = desk;
+    for (const cols of this.colliders) for (const c of cols) c.setFriction(pencil);
+    if (this.deskCollider) this.deskCollider.setFriction(desk);
+    for (const b of this.bodies) b.wakeUp();
+  }
+
+  /** Bounciness of the pencils, 0 (dead) to 1 (superball). */
+  setRestitution(r) {
+    this.rest = r;
+    for (const cols of this.colliders) for (const c of cols) c.setRestitution(r);
+    for (const b of this.bodies) b.wakeUp();
+  }
+
+  /**
+   * Drop a new pencil into the scene. `template` is a packet body to copy
+   * shape data from (any of them: they are all the canonical pencil), with
+   * a new pose and colours. Returns the new body index.
+   */
+  addBody(template, pos, quat, colors = null) {
+    const R = this.R;
+    const nb = {
+      ...template,
+      pos: [...pos], quat: [...quat],
+      render_colors: colors ?? template.render_colors,
+    };
+    this.packet.bodies.push(nb);
+    const i = this.B++;
+    this.mass.push(MASS); this.inertia.push(nb.inertia); this.offsets.push(nb.offsets);
+    this.counts.push(nb.offsets.length); this.N += nb.offsets.length;
+    this.state.pos.push([...pos]); this.state.quat.push([...quat]);
+    this.state.linvel.push([0, 0, 0]); this.state.angvel.push([0, 0, 0]);
+    const grow = (a, T = Int32Array) => { const n = new T(this.B); n.set(a); return n; };
+    this.restCount = grow(this.restCount);
+    this.seatGap = grow(this.seatGap, Float64Array);
+    this.balancedNow = grow(this.balancedNow, Uint8Array); this.balancedNow[i] = 1;
+    this.pivoting = grow(this.pivoting, Uint8Array);
+    this.loadCorrection.lift_mm.push(0);
+    const desc = R.RigidBodyDesc.dynamic()
+      .setTranslation(pos[0] * CM, pos[1] * CM, pos[2] * CM)
+      .setRotation({ x: quat[0], y: quat[1], z: quat[2], w: quat[3] })
+      .setLinearDamping(AIR_DAMPING_LIN).setAngularDamping(AIR_DAMPING_ANG)
+      .setCcdEnabled(true).setCanSleep(true);
+    const body = this.world.createRigidBody(desc);
+    const cols = [];
+    for (const [t0, t1] of PARTS) {
+      const cd = R.ColliderDesc.convexHull(hullPoints(t0, t1));
+      if (!cd) continue;
+      cd.setDensity(DENSITY / (CM * CM * CM))
+        .setFriction(this.fPencil ?? FRICTION_PENCIL).setRestitution(this.rest ?? RESTITUTION_PENCIL);
+      cols.push(this.world.createCollider(cd, body));
+    }
+    {
+      const rBarrel = PROFILE[4][1];
+      const clipLen = CLIP_LEN * LENGTH, clipW = CLIP_W * rBarrel * 2;
+      const cx = (-0.5 + CLIP_FROM_TOP) * LENGTH + clipLen / 2;
+      const cz = rBarrel + CLIP_PROUD - CLIP_T / 2;
+      const cd = R.ColliderDesc.cuboid(clipLen / 2 * CM, clipW / 2 * CM, CLIP_T / 2 * CM)
+        .setTranslation(cx * CM, 0, cz * CM).setDensity(DENSITY / (CM * CM * CM))
+        .setFriction(this.fPencil ?? FRICTION_PENCIL).setRestitution(this.rest ?? RESTITUTION_PENCIL);
+      cols.push(this.world.createCollider(cd, body));
+    }
+    this.bodies.push(body); this.colliders.push(cols);
+    this.mass[i] = body.mass();
+    this.last = null;
+    return i;
   }
 
   /** Flat Float64Array of world particle positions (m), as PhysSim gives. */

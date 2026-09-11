@@ -60,6 +60,25 @@ nudge (the clip is a collider now, standing proud as the real one does), plastic
 on plastic is nearer 0.28 than 0.42, and an impact at 2.2 m/s needs 16 substeps
 a frame not to sink into the pile.
 
+## The interface
+
+The page is a sandbox, not a viewer. The top bar picks a scene from photo
+thumbnails and shows which engine is running; the dock on the right has five
+tabs:
+
+| tab | what it holds |
+|---|---|
+| Play | speed (0.1× to 1× slow motion, real physics at a smaller step rate), reset, drop a new pencil, lift one, pull the load-bearing one; grab strength and follow speed |
+| Camera | views: home, top, side, low (desk level), and **photo**, the viewpoint the picture was taken from; follow a pencil; auto-orbit; field of view; a live readout |
+| Physics | gravity, pencil-on-pencil and pencil-on-desk friction, bounciness, all live; the defaults are the values that matched real pencils on the sensor checks |
+| Display | the photographed desk, **compare with the real photo** (the original photograph under the simulated pencils), shadows, filmic tone mapping; overlays for labels, contact points, velocity arrows and collider outlines |
+| Sensors | the live sensor report: which part of which pencil touches which part of which other, in millimetres from the point |
+
+Click a pencil to select it and a card shows its state, tilt, height, what it
+rests on and what it carries, with frame, follow, lift and nudge. The
+transport bar at the bottom has reset, pause, step and drop, with the step
+cost and playback rate stated. `?` lists the shortcuts; `H` hides everything.
+
 ## Why
 
 Generative 3D reconstruction produces photorealistic scenes that are physically

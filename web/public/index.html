@@ -4,56 +4,233 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PhysSplat</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  :root { color-scheme: dark; }
-  body { margin: 0; background: #101216; color: #dbe2ea;
-         font: 14px/1.45 system-ui, sans-serif; overflow: hidden; }
-  #hud { position: fixed; top: 14px; left: 14px; z-index: 2;
-         background: #181b21f2; border: 1px solid #2a2f38; border-radius: 10px;
-         padding: 12px 14px; max-width: 300px; }
-  #hud h1 { margin: 0 0 4px; font-size: 16px; color: #8ec5ff; }
-  #hud p { margin: 4px 0; color: #9aa5b1; font-size: 12.5px; }
-  #stats { font-variant-numeric: tabular-nums; color: #6ee7a8; }
-  select, button { background: #232833; color: #dbe2ea; border: 1px solid #3a4150;
-    border-radius: 7px; padding: 6px 10px; margin: 6px 6px 0 0; cursor: pointer;
-    font-size: 13px; }
-  #err { color: #ff8080; white-space: pre-wrap; }
-  /* the panel used to take half the viewport and hide the scene it
-     describes; keep it to a third and let it end where its content does */
-  #diag { position: fixed; right: 14px; top: 14px; z-index: 2; width: 520px;
-          max-width: min(38vw, calc(100vw - 380px)); max-height: calc(100vh - 28px);
-          overflow: auto; background: #181b21f2;
-          border: 1px solid #2a2f38; border-radius: 10px; padding: 10px 12px;
-          font: 11.5px/1.35 ui-monospace, Menlo, monospace; color: #c9d1d9; }
-  #diag h2 { margin: 0 0 6px; font-size: 13px; color: #8ec5ff; }
+  /* ------------------------------------------------------------ tokens */
+  :root {
+    color-scheme: dark;
+    --bg: #0e1116;
+    --panel: rgba(18, 21, 27, 0.78);
+    --panel-2: rgba(255, 255, 255, 0.04);
+    --line: rgba(255, 255, 255, 0.08);
+    --line-2: rgba(255, 255, 255, 0.14);
+    --text: #e6ebf2;
+    --muted: #93a0b1;
+    --faint: #66717f;
+    --accent: #7cc4ff;
+    --accent-2: #4f9ff0;
+    --good: #6ee7a8;
+    --warn: #ffcf6b;
+    --bad: #ff7b7b;
+    --radius: 12px;
+    --radius-s: 8px;
+    --shadow: 0 10px 30px rgba(0, 0, 0, 0.35), 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+    --font: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 var(--font);
+         overflow: hidden; -webkit-font-smoothing: antialiased; }
+  canvas { display: block; }
+  button, select, input { font: inherit; color: inherit; }
+  code, .mono { font-family: var(--mono); font-size: 11.5px; }
+  [hidden] { display: none !important; }
+
+  /* --------------------------------------------------------------- ui */
+  #ui { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+  #ui > * { pointer-events: auto; }
+  #ui.hidden > *:not(#labels):not(#toast) { display: none; }
+  .glass { background: var(--panel); backdrop-filter: blur(14px) saturate(140%);
+           -webkit-backdrop-filter: blur(14px) saturate(140%);
+           border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+
+  /* top bar */
+  #topbar { position: absolute; top: 14px; left: 14px; right: 14px; height: 56px;
+            display: flex; align-items: center; gap: 14px; padding: 0 10px 0 16px; }
+  #brand { display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
+  #brand h1 { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: 0.2px; color: var(--text); }
+  #brand span { color: var(--faint); font-size: 12px; }
+  #scenes { display: flex; gap: 8px; margin-left: 6px; overflow-x: auto; scrollbar-width: none; }
+  #scenes::-webkit-scrollbar { display: none; }
+  .scene { position: relative; width: 58px; height: 40px; border-radius: 8px; overflow: hidden;
+           border: 1px solid var(--line); background: #222; cursor: pointer; padding: 0; flex: none;
+           transition: transform .12s ease, border-color .12s ease; }
+  .scene img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0.85; }
+  .scene:hover { transform: translateY(-1px); border-color: var(--line-2); }
+  .scene.active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(124, 196, 255, 0.35); }
+  .scene.active img { opacity: 1; }
+  .scene small { position: absolute; left: 0; right: 0; bottom: 0; font-size: 9px; text-align: center;
+                 background: rgba(0,0,0,0.45); color: #dfe6ee; padding: 1px 0; letter-spacing: 0.2px; }
+  #topbar .spacer { flex: 1; }
+  .badge { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px;
+           border: 1px solid var(--line); background: var(--panel-2); color: var(--muted); font-size: 12px;
+           cursor: pointer; white-space: nowrap; }
+  .badge b { color: var(--text); font-weight: 600; }
+  .badge .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); box-shadow: 0 0 8px var(--good); }
+  .badge.gnn .dot { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .iconbtn { width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2);
+             display: inline-flex; align-items: center; justify-content: center; cursor: pointer; color: var(--muted); }
+  .iconbtn:hover { color: var(--text); border-color: var(--line-2); }
+
+  /* right dock */
+  #dock { position: absolute; top: 84px; right: 14px; width: 320px; max-height: calc(100vh - 170px);
+          display: flex; flex-direction: column; overflow: hidden; }
+  #dock.collapsed { width: 44px; }
+  #dock.collapsed #tabs, #dock.collapsed #panels { display: none; }
+  #dockhead { display: flex; align-items: center; justify-content: space-between; padding: 8px 8px 8px 14px;
+              border-bottom: 1px solid var(--line); }
+  #dockhead span { font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: 0.3px; text-transform: uppercase; }
+  #dock.collapsed #dockhead { justify-content: center; padding: 8px; }
+  #dock.collapsed #dockhead span { display: none; }
+  #tabs { display: flex; gap: 2px; padding: 8px 8px 0; }
+  .tab { flex: 1; padding: 7px 4px; text-align: center; border-radius: 8px; cursor: pointer; color: var(--muted);
+         font-size: 12px; font-weight: 500; border: 1px solid transparent; }
+  .tab:hover { color: var(--text); background: var(--panel-2); }
+  .tab.active { color: var(--text); background: var(--panel-2); border-color: var(--line); }
+  #panels { overflow-y: auto; padding: 10px 14px 14px; scrollbar-width: thin; scrollbar-color: #2a3140 transparent; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .group { margin: 4px 0 14px; }
+  .group h3 { margin: 0 0 8px; font-size: 11px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: 0.4px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 6px 0; min-height: 26px; }
+  .row label { color: var(--muted); font-size: 12.5px; }
+  .hint { color: var(--faint); font-size: 11.5px; margin: 2px 0 8px; line-height: 1.4; }
+
+  /* controls */
+  .btn { padding: 7px 11px; border-radius: var(--radius-s); border: 1px solid var(--line); background: var(--panel-2);
+         color: var(--text); cursor: pointer; font-size: 12.5px; font-weight: 500; white-space: nowrap; }
+  .btn:hover { border-color: var(--line-2); background: rgba(255,255,255,0.07); }
+  .btn.primary { background: var(--accent-2); border-color: var(--accent-2); color: #061019; }
+  .btn.primary:hover { background: var(--accent); border-color: var(--accent); }
+  .btn.small { padding: 5px 9px; font-size: 12px; }
+  .btn:disabled { opacity: 0.45; cursor: default; }
+  .btns { display: flex; flex-wrap: wrap; gap: 6px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius-s); overflow: hidden; background: var(--panel-2); }
+  .seg button { border: 0; background: transparent; color: var(--muted); padding: 6px 10px; cursor: pointer; font-size: 12px; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button.active { background: rgba(124, 196, 255, 0.18); color: var(--text); }
+  .slider { display: grid; grid-template-columns: 1fr; margin: 6px 0 8px; }
+  .slider .top { display: flex; justify-content: space-between; color: var(--muted); font-size: 12.5px; }
+  .slider .top b { color: var(--text); font-family: var(--mono); font-weight: 500; font-size: 11.5px; }
+  input[type=range] { -webkit-appearance: none; width: 100%; height: 22px; background: transparent; margin: 0; }
+  input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: linear-gradient(to right, var(--accent) var(--p, 0%), #2a3140 var(--p, 0%)); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #fff; margin-top: -5px;
+                                            box-shadow: 0 1px 4px rgba(0,0,0,0.5); border: 2px solid var(--accent); }
+  input[type=range]:disabled { opacity: 0.4; }
+  .switch { position: relative; width: 36px; height: 20px; border-radius: 999px; background: #2a3140; border: 1px solid var(--line); cursor: pointer; flex: none; transition: background .15s; }
+  .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #cfd8e3; transition: transform .15s; }
+  .switch.on { background: var(--accent-2); border-color: var(--accent-2); }
+  .switch.on::after { transform: translateX(16px); background: #fff; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12px; }
+  .kv span:nth-child(odd) { color: var(--faint); }
+  .kv span:nth-child(even) { font-family: var(--mono); font-size: 11.5px; color: var(--text); }
+  .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 6px; border: 1px solid rgba(255,255,255,0.2); }
+
+  /* transport */
+  #transport { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
+               display: flex; align-items: center; gap: 10px; padding: 8px 12px; }
+  #transport .big { width: 40px; height: 40px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+                    background: var(--accent-2); border: 0; color: #061019; cursor: pointer; }
+  #transport .big:hover { background: var(--accent); }
+  #transport .big svg { width: 16px; height: 16px; fill: currentColor; }
+  #transport .iconbtn svg { width: 14px; height: 14px; fill: currentColor; }
+  #stats { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; margin-left: 4px; }
+  #stats b { color: var(--good); font-weight: 500; }
+  #err { position: absolute; left: 50%; bottom: 74px; transform: translateX(-50%); color: var(--bad);
+         font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap; max-width: 60vw; }
+  #err:empty { display: none; }
+
+  /* selection card */
+  #card { position: absolute; left: 14px; bottom: 16px; width: 300px; padding: 12px 14px; }
+  #card h4 { margin: 0 0 8px; font-size: 13px; display: flex; align-items: center; justify-content: space-between; }
+  #card .kv { margin-bottom: 10px; }
+
+  /* labels and toast */
+  #labels { position: absolute; inset: 0; pointer-events: none; }
+  .label { position: absolute; transform: translate(-50%, -140%); padding: 2px 7px; border-radius: 6px; font-size: 11px;
+           font-family: var(--mono); background: rgba(14, 17, 22, 0.75); border: 1px solid var(--line); color: var(--text); white-space: nowrap; }
+  .label.sel { border-color: var(--accent); color: var(--accent); }
+  #toast { position: absolute; top: 84px; left: 50%; transform: translateX(-50%); padding: 8px 14px; font-size: 12.5px; color: var(--text); }
+
+  /* help */
+  #help { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.45); }
+  #help .sheet { width: 560px; max-width: 92vw; padding: 20px 22px; }
+  #help h2 { margin: 0 0 12px; font-size: 15px; }
+  #help table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  #help td { padding: 5px 4px; border-bottom: 1px solid var(--line); color: var(--muted); }
+  #help td:first-child { width: 42%; color: var(--text); font-family: var(--mono); font-size: 11.5px; }
+  kbd { padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line-2); background: var(--panel-2); font-family: var(--mono); font-size: 11px; }
+
+  /* diagnostics (advanced, press D) */
+  #diag { position: fixed; left: 14px; top: 84px; z-index: 6; width: 520px;
+          max-width: min(40vw, calc(100vw - 380px)); max-height: calc(100vh - 110px);
+          overflow: auto; padding: 10px 12px; font: 11.5px/1.35 var(--mono); color: #c9d1d9; }
+  #diag h2 { margin: 0 0 6px; font-size: 13px; color: var(--accent); font-family: var(--font); }
   #diag table { border-collapse: collapse; width: 100%; margin: 6px 0; }
-  #diag th, #diag td { text-align: right; padding: 2px 5px; border-bottom: 1px solid #262b34;
+  #diag th, #diag td { text-align: right; padding: 2px 5px; border-bottom: 1px solid var(--line);
           font-variant-numeric: tabular-nums; white-space: nowrap; }
-  #diag th { color: #7f8b99; font-weight: 600; }
-  #diag .warn { color: #ffcf6b; } #diag .error { color: #ff8080; } #diag .ok { color: #6ee7a8; }
-  #diag pre { white-space: pre-wrap; margin: 4px 0; color: #9aa5b1; max-height: 260px; overflow: auto; }
-  #diag button { margin: 4px 6px 4px 0; padding: 4px 8px; font-size: 11.5px; }
-  #diag small { color: #7f8b99; }
+  #diag th { color: var(--faint); font-weight: 600; }
+  #diag .warn { color: var(--warn); } #diag .error { color: var(--bad); } #diag .ok { color: var(--good); }
+  #diag pre { white-space: pre-wrap; margin: 4px 0; color: var(--muted); max-height: 260px; overflow: auto; }
+  #diag button { margin: 4px 6px 4px 0; padding: 4px 8px; font-size: 11.5px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2); cursor: pointer; }
+  #diag small { color: var(--faint); }
+
+  @media (max-width: 900px) {
+    #dock { width: 280px; }
+    #card { width: 260px; }
+    #brand span { display: none; }
+  }
 </style>
 </head>
 <body>
-<div id="hud">
-  <h1>PhysSplat</h1>
-  <p>A photo of real pencils, reconstructed to 3D and simulated in your
-     browser: a rigid-body solver (Rapier) by default, or the learned neural
-     physics model with <code>?engine=gnn</code>.</p>
-  <p><b>drag</b> a pencil to grab it &middot; <b>flick</b> to poke &middot;
-     drag empty space or <b>right-drag</b> to orbit (works while holding) &middot;
-     <b>scroll</b> zooms to the cursor &middot; <b>middle-drag</b> pans &middot;
-     <b>double-click</b> a pencil to centre on it &middot;
-     keys: <b>arrows/WASD</b> orbit, <b>Q/E</b> zoom, <b>T</b> top view, <b>F</b> frame, <b>R</b> home</p>
-  <select id="scene"></select>
-  <button id="reset">reset</button>
-  <p id="stats">loading model...</p>
-  <p id="err"></p>
-  <p><small>press <b>D</b> for live diagnostics</small></p>
+<div id="ui">
+  <header id="topbar" class="glass">
+    <div id="brand"><h1>PhysSplat</h1><span>a photo of pencils, alive on your desk</span></div>
+    <div id="scenes"></div>
+    <div class="spacer"></div>
+    <div id="engine" class="badge" title="click to switch engines"><span class="dot"></span><span>engine</span><b>…</b></div>
+    <button id="helpbtn" class="iconbtn" title="shortcuts (?)">?</button>
+    <button id="hidebtn" class="iconbtn" title="hide interface (H)">⌃</button>
+  </header>
+
+  <aside id="dock" class="glass">
+    <div id="dockhead"><span>controls</span><button id="dockfold" class="iconbtn" title="collapse">›</button></div>
+    <nav id="tabs"></nav>
+    <div id="panels"></div>
+  </aside>
+
+  <div id="transport" class="glass"></div>
+  <div id="err"></div>
+  <div id="card" class="glass" hidden></div>
+  <div id="labels"></div>
+  <div id="toast" class="glass" hidden></div>
+
+  <div id="help" hidden>
+    <div class="sheet glass">
+      <h2>Shortcuts</h2>
+      <table>
+        <tr><td><kbd>drag</kbd> a pencil</td><td>grab it; release to let go</td></tr>
+        <tr><td><kbd>flick</kbd> a pencil</td><td>a quick short drag pokes it</td></tr>
+        <tr><td><kbd>click</kbd> a pencil</td><td>select it (card at bottom left)</td></tr>
+        <tr><td><kbd>double-click</kbd></td><td>centre the view on it</td></tr>
+        <tr><td><kbd>right-drag</kbd> / <kbd>drag</kbd> empty space</td><td>orbit (works while holding a pencil)</td></tr>
+        <tr><td><kbd>scroll</kbd> / <kbd>middle-drag</kbd></td><td>zoom to cursor / pan along the desk</td></tr>
+        <tr><td><kbd>Space</kbd> &nbsp; <kbd>.</kbd></td><td>pause or play &nbsp;·&nbsp; step one frame</td></tr>
+        <tr><td><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> <kbd>5</kbd></td><td>views: home, top, side, low, photo</td></tr>
+        <tr><td><kbd>arrows</kbd> / <kbd>WASD</kbd> &nbsp; <kbd>Q</kbd> <kbd>E</kbd></td><td>orbit &nbsp;·&nbsp; zoom</td></tr>
+        <tr><td><kbd>F</kbd> &nbsp; <kbd>R</kbd> &nbsp; <kbd>O</kbd></td><td>frame pencil under cursor &nbsp;·&nbsp; home &nbsp;·&nbsp; auto-orbit</td></tr>
+        <tr><td><kbd>N</kbd></td><td>drop a new pencil</td></tr>
+        <tr><td><kbd>H</kbd> &nbsp; <kbd>D</kbd> &nbsp; <kbd>?</kbd></td><td>hide interface &nbsp;·&nbsp; diagnostics &nbsp;·&nbsp; this sheet</td></tr>
+      </table>
+      <div style="margin-top:12px;text-align:right"><button class="btn" id="helpclose">close</button></div>
+    </div>
+  </div>
 </div>
-<div id="diag" hidden>
+
+<div id="diag" class="glass" hidden>
   <h2>diagnostics <small>(physsplat.diag / physsplat.probe in the console; docs/diagnostics.md)</small></h2>
   <div id="diag-totals">waiting for first step...</div>
   <table id="diag-table"></table>
@@ -66,6 +243,7 @@
   </div>
   <pre id="diag-log"></pre>
 </div>
+
 <!-- ort.webgpu bundle: includes the WebGPU backend (ort.min.js is wasm-only) -->
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.webgpu.min.js"></script>
 <script type="importmap">
@@ -73,6 +251,6 @@
              "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
 </script>
 <!-- the query is a build stamp: a browser holding a cached main.js after a deploy would otherwise keep old physics -->
-<script type="module" src="./js/main.js?b=202609111406"></script>
+<script type="module" src="./js/main.js?b=20260911160324"></script>
 </body>
 </html>

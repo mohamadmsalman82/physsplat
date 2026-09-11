@@ -11,6 +11,8 @@ import { Sensors } from "./sensors.js";
 import { buildPencil } from "./pencil_mesh.js";
 import { grabForce } from "./physics.js";
 import { setupCamera } from "./camera.js";
+import { initUI } from "./ui.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 
 const $ = (id) => document.getElementById(id);
 const err = (m) => { $("err").textContent = String(m); console.error(m); };
@@ -25,11 +27,23 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 document.body.appendChild(renderer.domElement);
+// Filmic tone mapping keeps the white desk from clipping and gives the
+// plastic its highlights; an environment map gives it something to reflect.
+// Filmic tone mapping is a Display toggle, off by default: the lights are
+// tuned so a white desk renders white without it, and ACES pulled the
+// pencils' colours toward pastel.
+renderer.toneMapping = THREE.NoToneMapping;
+renderer.toneMappingExposure = 1.0;
+{
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
+}
 const CAM_HOME = { pos: [0.16, -0.26, 0.2], target: [0, 0, 0.015] };
 const controls = new OrbitControls(cam, renderer.domElement);
 controls.target.set(...CAM_HOME.target);
 // limits, buttons, keys, double-click framing and eased moves all live in
 // js/camera.js; `proxies` and `sim` are read lazily, after they exist
+let followSpeed = 0.30;
 const camera = setupCamera({
   cam, controls, dom: renderer.domElement,
   getProxies: () => proxies,
@@ -132,6 +146,8 @@ async function loadDesk(name) {
   const w = W * d.m_per_px, h = (H - top) * d.m_per_px;
   const tex = await new THREE.TextureLoader().loadAsync(`./desk/${d.image}`);
   tex.colorSpace = THREE.SRGBColorSpace;
+  deskTextures = { clean: tex, photo: null };
+  displayState.comparePhoto = false;
   tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
   const photo = new THREE.Mesh(
     new THREE.PlaneGeometry(w, h),
@@ -148,6 +164,7 @@ async function loadDesk(name) {
   // vertical plane stood there was a dark slab across half of every
   // elevated view. The desk continues instead, and the background takes a
   // light neutral between the desk and what lay beyond it in the photo.
+  deskGroup.visible = displayState.desk;
   scene.add(deskGroup);
 }
 
@@ -182,6 +199,220 @@ const dbg = {
 };
 globalThis.physsplat = dbg;
 
+// ------------------------------------------------------------- app API
+// What the interface (js/ui.js) is built against. Everything the panels
+// can do goes through here, so the physics and the page never know about
+// each other's markup.
+const listeners = { scene: new Set(), select: new Set(), pause: new Set(), speed: new Set() };
+const frameListeners = new Set();
+let selected = null;
+const displayState = { desk: true, comparePhoto: false, shadows: true, filmic: false,
+  labels: false, contacts: false, velocities: false, colliders: false };
+const app = {
+  scenes: [], scene: null,
+  loadScene: (n) => loadScene(n),
+  get engine() { return Q.get("engine") === "gnn" ? "gnn" : "rapier"; },
+  switchEngine(name) {
+    const u = new URL(location.href); u.searchParams.set("engine", name);
+    if (app.scene) u.searchParams.set("scene", app.scene);
+    location.href = u.toString();
+  },
+  get sim() { return sim; },
+  get sensors() { return dbg.sensors; },
+  get diag() { return diag; },
+  get paused() { return dbg.paused; },
+  pause() { dbg.paused = true; app.emit("pause", true); },
+  play() { dbg.paused = false; app.emit("pause", false); },
+  step() { dbg.paused = true; dbg.stepOnce = true; app.emit("pause", true); },
+  reset() { resetScene(); },
+  speed: 1,
+  setSpeed(v) { app.speed = Math.max(0.05, Math.min(1, v)); app.emit("speed", app.speed); },
+  camera,
+  get selected() { return selected; },
+  select: (i) => select(i),
+  get bodyCount() { return sim?.B ?? 0; },
+  bodyInfo(i) {
+    if (!dbg.sensors || i === null || i >= sim.B) return null;
+    const b = dbg.sensors.body(i);
+    b.colorCss = bodyColorCss(i);
+    return b;
+  },
+  project(i) {
+    const p = proxies[i];
+    if (!p) return { visible: false };
+    const v = p.position.clone().project(cam);
+    return { x: (v.x + 1) / 2 * innerWidth, y: (1 - v.y) / 2 * innerHeight, visible: v.z < 1 && Math.abs(v.x) < 1.05 && Math.abs(v.y) < 1.05 };
+  },
+  probe(name, ...args) { return dbg.run(name, ...args); },
+  nudge(i) {
+    // a short push along the desk, the way a fingertip flicks a pencil
+    const dir = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, 0).normalize();
+    startFlick(i, [0, 0, 0], dir.toArray(), 0.25, 0.04);
+  },
+  spawn(colorHex = null) { return spawnPencil(colorHex); },
+  display: {
+    get: (k) => displayState[k],
+    set: (k, v) => { displayState[k] = v; applyDisplay(k); },
+  },
+  physics: {
+    get available() { return !!sim?.setGravityScale; },
+    get(k) {
+      if (k === "grabStrength") return GRAB.omega;
+      if (k === "followSpeed") return followSpeed;
+      const p = sim?.params ?? { gravity: 1, frictionPencil: 0.28, frictionDesk: 0.45, restitution: 0.04 };
+      return p[k];
+    },
+    set(k, v) {
+      if (k === "grabStrength") { GRAB.omega = v; return; }
+      if (k === "followSpeed") { followSpeed = v; return; }
+      if (!sim?.setGravityScale) return;
+      if (k === "gravity") sim.setGravityScale(v);
+      else if (k === "frictionPencil") sim.setFriction(v, sim.params.frictionDesk);
+      else if (k === "frictionDesk") sim.setFriction(sim.params.frictionPencil, v);
+      else if (k === "restitution") sim.setRestitution(v);
+    },
+  },
+  stats: null,
+  onScene: (cb) => listeners.scene.add(cb),
+  onSelect: (cb) => listeners.select.add(cb),
+  onPause: (cb) => listeners.pause.add(cb),
+  onSpeed: (cb) => listeners.speed.add(cb),
+  onFrame: (cb) => frameListeners.add(cb),
+  emit(kind, v) { for (const cb of listeners[kind] ?? []) { try { cb(v); } catch (e) { console.warn(e); } } },
+};
+dbg.app = app;
+
+function bodyColorCss(i) {
+  const g = groups[i];
+  let rgb = null;
+  g?.traverse((o) => { if (rgb || !o.isMesh || !o.geometry.getAttribute("color")) return;
+    const c = o.geometry.getAttribute("color"); const n = c.count;
+    // the barrel is most of the vertices: take the median colour
+    const idx = Math.floor(n * 0.5); rgb = [c.getX(idx), c.getY(idx), c.getZ(idx)]; });
+  if (!rgb) return "#888";
+  return `rgb(${rgb.map((x) => Math.round(Math.sqrt(x) * 255)).join(",")})`;
+}
+
+// selection highlight: a faint emissive tint on the pencil itself
+let selectedTint = [];
+function select(i) {
+  if (i !== null && (i < 0 || i >= (sim?.B ?? 0))) i = null;
+  for (const [m, e] of selectedTint) m.emissive.setHex(e);
+  selectedTint = [];
+  selected = i;
+  if (i !== null) groups[i]?.traverse((o) => {
+    if (o.isMesh && o.material.emissive) { selectedTint.push([o.material, o.material.emissive.getHex()]); o.material.emissive.setHex(0x1b3c5a); }
+  });
+  app.emit("select", i);
+}
+
+/** Drop a new pencil above the pile. Rapier only; the learned engine's graph is fixed at load. */
+function spawnPencil(colorHex) {
+  if (!sim?.addBody) { app.toast?.("only the Rapier engine can add pencils"); return null; }
+  const template = sim.packet.bodies[0];
+  const c = new THREE.Color(colorHex ?? `hsl(${Math.floor(Math.random() * 360)}, 55%, 55%)`);
+  const colors = template.render_colors.map(() => [Math.round(c.r * 255), Math.round(c.g * 255), Math.round(c.b * 255)]);
+  const az = Math.random() * Math.PI, tilt = (Math.random() - 0.5) * 0.3;
+  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, tilt, az));
+  const pos = [(Math.random() - 0.5) * 0.06, (Math.random() - 0.5) * 0.06, 0.12];
+  const i = sim.addBody(template, pos, [q.x, q.y, q.z, q.w], colors);
+  buildBodyVisual(sim.packet.bodies[i], i);
+  // the diagnostics keep per-body arrays sized at reset; tell them
+  diag?.reset("spawn");
+  dbg.sensors?.sample(null);
+  prevState = currState = null;
+  return i;
+}
+
+// overlays: contact points, velocity arrows, collider outlines
+const overlay = { contacts: new THREE.Group(), velocities: new THREE.Group(), colliders: new THREE.Group() };
+Object.values(overlay).forEach((g) => { g.visible = false; scene.add(g); });
+const contactGeo = new THREE.SphereGeometry(0.0022, 10, 8);
+const contactMat = new THREE.MeshBasicMaterial({ color: 0xffcf6b });
+const contactPenMat = new THREE.MeshBasicMaterial({ color: 0xff7b7b });
+let overlayTick = 0;
+function updateOverlays() {
+  if (!sim || !dbg.sensors) return;
+  if (displayState.contacts && (overlayTick++ % 3 === 0)) {
+    const g = overlay.contacts; g.clear();
+    for (const c of dbg.sensors.touch()) {
+      if (!c.touching && c.pen_mm <= 0) continue;
+      const m = new THREE.Mesh(contactGeo, c.pen_mm > 0.3 ? contactPenMat : contactMat);
+      m.position.set(c.world[0] / 1000, c.world[1] / 1000, c.world[2] / 1000);
+      g.add(m);
+    }
+  }
+  if (displayState.velocities) {
+    const g = overlay.velocities; g.clear();
+    for (let b = 0; b < sim.B; b++) {
+      const v = sim.state.linvel[b]; const sp = Math.hypot(v[0], v[1], v[2]);
+      if (sp < 0.005) continue;
+      const dir = new THREE.Vector3(v[0], v[1], v[2]).normalize();
+      const len = Math.min(0.12, sp * 0.25);
+      g.add(new THREE.ArrowHelper(dir, new THREE.Vector3(...sim.state.pos[b]), len, 0x7cc4ff, len * 0.3, len * 0.18));
+    }
+  }
+  if (displayState.colliders) {
+    const g = overlay.colliders;
+    if (g.children.length !== sim.B) {
+      g.clear();
+      for (let b = 0; b < sim.B; b++) g.add(colliderOutline(sim.packet.bodies[b]));
+    }
+    for (let b = 0; b < sim.B; b++) {
+      const o = g.children[b]; if (!o) continue;
+      o.position.set(...sim.state.pos[b]); o.quaternion.set(...sim.state.quat[b]);
+    }
+  }
+}
+function colliderOutline(b) {
+  // the canonical profile as a wire silhouette, plus the clip box
+  const pts = [];
+  const prof = sim.packet.bodies[0].capsule?.taper ? PENCIL_PROFILE : null;
+  const L = 0.150;
+  const knots = prof ?? [[0, b.capsule.radius], [1, b.capsule.radius]];
+  for (let k = 0; k < 4; k++) {
+    const a = (k / 4) * Math.PI;
+    for (let i = 1; i < knots.length; i++) {
+      const [t0, r0] = knots[i - 1], [t1, r1] = knots[i];
+      pts.push((t0 - 0.5) * L, r0 * Math.cos(a), r0 * Math.sin(a), (t1 - 0.5) * L, r1 * Math.cos(a), r1 * Math.sin(a));
+      pts.push((t0 - 0.5) * L, -r0 * Math.cos(a), -r0 * Math.sin(a), (t1 - 0.5) * L, -r1 * Math.cos(a), -r1 * Math.sin(a));
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
+  const wire = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x6ee7a8, transparent: true, opacity: 0.7 }));
+  const clip = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(0.02775, 0.00396, 0.002)),
+    new THREE.LineBasicMaterial({ color: 0x6ee7a8, transparent: true, opacity: 0.7 }));
+  clip.position.set((-0.5 + 0.125) * L + 0.02775 / 2, 0, 0.0045 + 0.0012 - 0.001);
+  const grp = new THREE.Group(); grp.add(wire, clip);
+  return grp;
+}
+let PENCIL_PROFILE = null;
+import("./pencil.js").then((m) => { PENCIL_PROFILE = m.PROFILE; });
+
+function applyDisplay(k) {
+  const v = displayState[k];
+  if (k === "shadows") renderer.shadowMap.enabled = v, scene.traverse((o) => { if (o.material) o.material.needsUpdate = true; });
+  else if (k === "desk") { if (deskGroup) deskGroup.visible = v; }
+  else if (k === "comparePhoto") swapDeskPhoto(v);
+  else if (k === "filmic") { renderer.toneMapping = v ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping; scene.traverse((o) => { if (o.material) o.material.needsUpdate = true; }); }
+  else if (k in overlay) { overlay[k].visible = v; if (!v) overlay[k].clear(); }
+}
+let deskTextures = { clean: null, photo: null };
+async function swapDeskPhoto(on) {
+  const photo = deskGroup?.children?.[0];
+  if (!photo || !app.scene) return;
+  if (on && !deskTextures.photo) {
+    try {
+      const t = await new THREE.TextureLoader().loadAsync(`./desk/${app.scene}_photo.jpg`);
+      t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      deskTextures.photo = t;
+    } catch (e) { app.toast?.("no photo for this scene"); return; }
+  }
+  photo.material.map = on ? deskTextures.photo : deskTextures.clean;
+  photo.material.needsUpdate = true;
+}
+
 // Yield to the event loop between physics steps. setTimeout is throttled to
 // 1 Hz in a background tab, which froze scripted probes run from a hidden
 // tab; a MessageChannel round-trip is not throttled, so use it whenever the
@@ -196,6 +427,9 @@ function yieldSlice(ms) {
 
 async function loadScene(name) {
   loading = true;                      // physics loop idles until rebuilt
+  app.scene = name;
+  selected = null; app.emit("select", null);
+  app.emit("scene", name);
   const packet = await (await fetch(`./packets/${name}.json`, { cache: "no-cache" })).json();
   groups.forEach((g) => scene.remove(g));
   proxies.forEach((p) => scene.remove(p));
@@ -212,7 +446,15 @@ async function loadScene(name) {
     dbg.sensors = new Sensors(sim);
   }
   else diag.reset(`scene:${name}`);
-  packet.bodies.forEach((b, i) => {
+  packet.bodies.forEach((b, i) => buildBodyVisual(b, i));
+  syncTransforms();
+  resetCamera();
+  loadDesk(name);                       // the photo's own desk, asynchronously
+  finishLoad();
+}
+
+function buildBodyVisual(b, i) {
+  {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position",
       new THREE.Float32BufferAttribute(b.render_verts.flat(), 3));
@@ -223,6 +465,7 @@ async function loadScene(name) {
       // procedural pencil inside the physical capsule, coloured from the
       // reconstruction (js/pencil_mesh.js)
       obj = buildPencil(b);
+      obj.traverse((o) => { if (o.isMesh) o.material.envMapIntensity = 0.55; });
     } else if (b.render_faces && b.render_faces.length && Q.get("points") !== "1") {
       // lit surface from the reconstruction's own triangles
       geo.setIndex(b.render_faces.flat());
@@ -249,10 +492,10 @@ async function loadScene(name) {
     wrap.userData.body = i;
     scene.add(wrap);
     proxies.push(wrap);
-  });
-  syncTransforms();
-  resetCamera();
-  loadDesk(name);                       // the photo's own desk, asynchronously
+  }
+}
+
+function finishLoad() {
   // A reconstructed pile is not exactly in equilibrium (single-view depth
   // error), and the physics rules move it into one during the first few
   // steps. Run those steps before showing motion, so the scene appears
@@ -446,6 +689,8 @@ renderer.domElement.addEventListener("pointerup", () => {
       Math.max(0.03, delta.length() * 2));
   } else if (drag) {
     diag?.event("grab_end", { body: drag.body, held_ms: Math.round(performance.now() - drag.t0) });
+    // a press that never travelled is a click: select
+    if (drag.px <= FLICK_MIN_PIXELS) select(drag.body);
   }
   drag = null;
   camera.holdingPencil(false);
@@ -465,7 +710,7 @@ function resetScene() {
   preroll = PREROLL_STEPS;
   groups.forEach((g) => { g.userData.shown = false; });   // snap, don't slide back
 }
-$("reset").onclick = resetScene;
+($("reset") ?? {}).onclick = resetScene;
 
 function worldGrabPoint(d) {
   return d.local.clone()
@@ -517,7 +762,7 @@ async function physicsLoop() {
       // distribution too.
       drag.follow ??= drag.p0.clone();
       const step = drag.target.clone().sub(drag.follow);
-      const maxStep = FOLLOW_SPEED * rt.dt;
+      const maxStep = followSpeed * rt.dt;
       if (step.length() > maxStep) step.setLength(maxStep);
       drag.follow.add(step);
       const f = springForce(drag.body, wp, drag.follow.toArray());
@@ -575,7 +820,9 @@ async function physicsLoop() {
     // (a blind tester measured 18.9 to 73.4 steps/s). Sim time may still
     // fall behind when a step costs more than 1/60 s, which is honest, but
     // it may never get ahead.
-    simClock += rt.dt * 1000;
+    // slow motion is a smaller step rate against the same wall clock: the
+    // physics step itself is unchanged, so it is real physics, only slower
+    simClock += rt.dt * 1000 / app.speed;
     const elapsed = () => performance.now() - clockStart;
     if (simClock - elapsed() < -500) simClock = elapsed();      // fell behind: resync
     // And never AHEAD. yieldSlice skips timers in a hidden tab so scripted
@@ -640,14 +887,13 @@ async function physicsLoop() {
       sim = new PhysSim(backend, runtime, { bodies: [] });
     }
     const names = await (await fetch("./packets/index.json")).json();
-    const sel = $("scene");
-    names.forEach((n) => sel.add(new Option(n, n)));
-    sel.onchange = () => loadScene(sel.value);
+    app.scenes = names;
     const first = names.includes(q.get("scene")) ? q.get("scene") : names[0];
-    sel.value = first;
+    app.scene = first;
     await loadScene(first);
     physicsLoop();
     initDiagPanel();
+    initUI(app);
     setInterval(() => {
       const t = sim?.timing;
       const detail = t ? ` [${t.backend}: features ${t.features_ms.toFixed(0)} | graph ` +
@@ -662,9 +908,8 @@ async function physicsLoop() {
       // 1/60 s on most machines, so the scene runs slower than life and a
       // viewer should know that rather than read it as low gravity
       const rate = Math.min(1, runtime.dt * 1000 / Math.max(stepMs, 1));
-      $("stats").textContent =
-        `model step ${runtime.step} | physics ${stepMs.toFixed(0)} ms/step | ` +
-        `${rate.toFixed(2)}x real time${detail}${state}`;
+      app.stats = { engine: t?.backend === "rapier" ? "Rapier" : (t?.backend ?? "…"), stepMs, rate, steps: sim?.stepCount ?? 0,
+        N: t?.N, E: t?.E, stalled: !loading && since > 3000, detail: `${detail}${state}` };
     }, 500);
   } catch (e) { err(e); }
 })();
@@ -731,6 +976,8 @@ addEventListener("resize", () => {
   requestAnimationFrame(render);
   camera.update();                 // keys and eased moves, before damping
   controls.update();
+  updateOverlays();
+  for (const cb of frameListeners) { try { cb(); } catch (e) { /* a UI listener must never stop the frame */ } }
   renderInterpolated();
   renderer.render(scene, cam);
 })();
