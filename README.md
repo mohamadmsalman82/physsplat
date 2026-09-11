@@ -17,16 +17,48 @@ Every physics step runs client-side; there is no server in the loop.
 PhysSplat turns a single photograph of simple objects on a flat surface (pencils
 today; the pipeline is object-agnostic) into a fully interactive 3D simulation.
 The scene is reconstructed to 3D, decomposed into rigid bodies without
-supervision, and simulated by a graph neural network trained entirely on
-synthetic data, with no hand-coded collision solver. You orbit the scene, grab
-and poke objects with the mouse, and watch them slide, pivot, and topple.
+supervision, and simulated in the browser. Two engines share one interface: a
+rigid-body solver ([Rapier](https://github.com/dimforge/rapier), Rust compiled
+to WebAssembly), which is the default, and a graph neural network trained
+entirely on synthetic data with no hand-coded collision solver, behind
+`?engine=gnn`. You orbit the scene, grab and poke objects with the mouse, and
+watch them slide, pivot, and topple.
 
 ```
-photo ──► single-image 3D ──► unsupervised object ──► learned GNN ──► interactive
-.jpg      reconstruction      decomposition           dynamics        three.js demo
+photo ──► single-image 3D ──► unsupervised object ──► rigid-body   ──► interactive
+.jpg      reconstruction      decomposition           solver, or GNN  three.js demo
           (TripoSR)           + particle sampler      (per body)      custom WebGPU
           └────────── once, per scene ──────────┘     └─ every frame, in-browser ─┘
 ```
+
+## Two engines, and why the solver ships by default
+
+The research question was whether a learned simulator could carry a photo of
+real objects into a plausible interactive scene, and the answer is: partly.
+Eight blind review rounds and three rounds of player reports went into fencing
+the learned model's failure modes with analytic rules (free flight, pivoting,
+settling, seating, stiction, swept collision, held-body caps), each measured
+and each earning its place, and the pencils still did not lie flat, still
+hovered, still twitched. The one change that came out of that work, making
+every pencil one canonical shape, is also what made a classical solver usable:
+there was finally a clean collider to give it. Measured on the same
+sensor-driven checks, all four scenes:
+
+| behaviour | learned model + rules | Rapier |
+|---|---|---|
+| lone pencil dropped on the desk | pinned wherever it stopped, up to 5° | lies at 0.5° on its grip |
+| holding a pencil still at its centre | 3 to 35° of tilt, up to 13.8 rad/s | 0.2 to 3.8°, 0.04 to 0.40 rad/s |
+| end grab lifted clear | dangles | dangles, 90.0° |
+| resting gap to what a pencil sits on | 0.0 mm after a seating rule | 0.0 mm |
+| 250 mm drop onto the pile, worst overlap | 0.1 to 3.4 mm | 0.1 to 1.0 mm |
+| cost per 1/60 s step | 15 to 33 ms (WebGPU) | 0.5 ms (WASM) |
+
+The learned model remains in the repo, in the paper, and in the demo, because
+the comparison is the interesting result. See `web/public/js/rapier_sim.js`
+for what the solver taught in turn: a truly round pencil rolls off a pile at a
+nudge (the clip is a collider now, standing proud as the real one does), plastic
+on plastic is nearer 0.28 than 0.42, and an impact at 2.2 m/s needs 16 substeps
+a frame not to sink into the pile.
 
 ## Why
 

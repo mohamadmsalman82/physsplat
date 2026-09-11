@@ -148,6 +148,11 @@ export class RapierSim {
     this.world.maxCcdSubsteps = this.ccdSubsteps;
     const ip = this.world.integrationParameters;
     ip.numSolverIterations = this.solverIterations;
+    // Stiffer contacts than the default 30 Hz: a 6 g pencil resting on that
+    // sat 0.17 mm into the desk and 0.26 mm into its neighbour at rest.
+    // Invisible at this scale, but the sensors flag anything over 0.05 mm
+    // and they should have nothing to flag.
+    if ("contact_natural_frequency" in ip) ip.contact_natural_frequency = 240;
 
     // the desk: a slab whose top face is z = 0
     const desk = this.world.createRigidBody(R.RigidBodyDesc.fixed().setTranslation(0, 0, -5));
@@ -198,12 +203,19 @@ export class RapierSim {
     // The packet's poses were settled by the learned model, which is not
     // this model, and a few millimetres of disagreement is a pencil that
     // drops or rolls in the first frames otherwise.
-    // until everything sleeps, within reason: a pile that is still moving
-    // when the first frame is drawn is a pile that appears to move by itself
+    // Quasi-statically: heavy damping while it settles, so a pencil that the
+    // solver finds a few millimetres off equilibrium eases down instead of
+    // dropping, kicking a neighbour, and sending it rolling. In IMG_8504
+    // that roll was 15 cm, and the scene no longer looked like the photo.
+    // Then until everything sleeps, within reason: a pile still moving when
+    // the first frame is drawn is a pile that appears to move by itself.
+    for (const b of this.bodies) { b.setLinearDamping(8); b.setAngularDamping(8); }
     for (let k = 0; k < SETTLE_STEPS * 5; k++) {
       this.#advance();
       if (k >= SETTLE_STEPS && this.bodies.every((b) => b.isSleeping())) break;
     }
+    for (const b of this.bodies) { b.setLinearDamping(AIR_DAMPING_LIN); b.setAngularDamping(AIR_DAMPING_ANG); b.wakeUp(); }
+    for (let k = 0; k < 60; k++) this.#advance();     // and a second at real damping
     this.#readBack();
     this.stepCount = 0;
   }

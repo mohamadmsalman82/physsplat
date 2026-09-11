@@ -712,6 +712,41 @@ lower than across its barrel and the grip's extra millimetre is modelled
 to 0.00 mm, which is the fix from the previous section working. Drops
 onto a pile overlap 0.14 to 0.56 mm.
 
+## The engine (2026-09-11): Rapier by default
+
+Not a round. A player, after everything above: "the pencils never lay flat
+... find a current open source repository that maps the physical behavior
+of pencils being stacked on each other and fix it."
+
+That repository is Rapier (dimforge/rapier), a rigid-body solver in Rust
+compiled to WebAssembly. It is the demo's default engine now, with the
+learned model behind `?engine=gnn`, both behind one interface so the
+sensors, probes and page do not know which is underneath. Held to the
+same sensor-driven checks on all four scenes: a lone pencil dropped on
+the desk lies at 0.52 deg on its grip; nothing drifts (0.00 to 0.17 mm
+over 10 s); nothing floats; every body rests at 0.00 mm from what is
+under it; holding a pencil still tilts it 0.2 to 3.8 deg (was 3 to 35)
+with 0.04 to 0.40 rad/s of spin (was 0.09 to 13.8); an end grab dangles
+to exactly 90.0 deg; a 250 mm drop overlaps 0.1 to 1.0 mm for a frame; a
+pencil dropped across another's point lands on its cone at a point's
+height. A step costs 0.5 ms against 15 to 33.
+
+What the solver taught, each measured: 16-sided collider hulls had been
+stopping pencils rolling with their flats, and with round hulls IMG_8504
+rolled 33 mm in its first ten seconds, which is why a real pencil has a
+clip and why the clip is now a collider standing 1.2 mm proud (an 8 rad/s
+spin rolls 0.1 mm before it catches); plastic on plastic at 0.42 made a
+pile ride along on a slowly pulled pencil, at 0.28 it drops or slides
+off, though a pencil lying almost parallel with most of its weight aboard
+still rides 277 mm, as a real one would; an impact at 2.2 m/s sinks 7 mm
+into the pile at 4 substeps a frame and 0.45 mm at 16; and settling the
+loaded scene quasi-statically, under heavy damping, is what keeps the
+photo's arrangement, since a pencil the solver finds a few millimetres
+off equilibrium otherwise drops, kicks a neighbour, and sends it 15 cm.
+
+The learned model stays, in the repo, the paper and the demo, because the
+comparison is the finding.
+
 ## Round 9
 
 Pending.

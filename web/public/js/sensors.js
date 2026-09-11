@@ -373,7 +373,7 @@ export class Sensors {
       for (let b = 0; b < (f.bodies?.length ?? 0); b++) {
         const bb = f.bodies[b];
         // through the table
-        if (bb.below_table_mm > 0.05) {
+        if (bb.below_table_mm > 0.3) {
           start(`sink${b}`, { body: b, from: f.step, peak_mm: 0 });
           open[`sink${b}`].peak_mm = Math.max(open[`sink${b}`].peak_mm, bb.below_table_mm);
           open[`sink${b}`].to = f.step;
@@ -440,7 +440,7 @@ export class Sensors {
         : b.held_still ? "still (held)" : "still"}` +
         `, ${b.elevation_deg} deg from flat` +
         `, floor gap ${b.floor.gap_mm} mm on its ${b.floor.at.region}` +
-        (b.floor.below_table_mm ? `  *** ${b.floor.below_table_mm} mm THROUGH THE TABLE ***` : "") +
+        (b.floor.below_table_mm > 0.3 ? `  *** ${b.floor.below_table_mm} mm THROUGH THE TABLE ***` : "") +
         (b.unsupported ? "  *** NOTHING UNDER IT ***" : ""));
       for (const c of b.contacts) {
         const other = c.bodies[0] === b.id ? c.bodies[1] : c.bodies[0];
@@ -449,7 +449,7 @@ export class Sensors {
         L.push(`   ${c.touching ? "touches" : `${c.gap_mm} mm from`} ${other}` +
           `: its ${mine.region} (${mine.mm_from_point} mm from its point)` +
           (theirs ? ` against their ${theirs.region}` : " against the table") +
-          (c.pen_mm ? `  *** OVERLAPPING ${c.pen_mm} mm ***` : "") +
+          (c.pen_mm > 0.3 ? `  *** OVERLAPPING ${c.pen_mm} mm ***` : "") +
           (c.sliding_mms > 1 ? `  sliding ${c.sliding_mms} mm/s` : ""));
       }
     }
