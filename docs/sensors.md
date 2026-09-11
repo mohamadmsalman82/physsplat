@@ -55,10 +55,10 @@ UNDER IT` and `OVERLAPPING n mm` in capitals and appends recent problems from
 
 ```
 step 60  (whole scene at rest)
-body 0: still (held), 3.67 deg from flat, floor gap 0 mm on its grip
+body 0: still (settled), 3.67 deg from flat, floor gap 0 mm on its grip
    touches table: its grip (22.1 mm from its point) against the table
    1.747 mm from 4: its grip (22.6 mm from its point) against their barrel
-body 4: still (held), 1.92 deg from flat, floor gap 9.915 mm on its barrel  *** NOTHING UNDER IT ***
+body 4: still (settled), 1.92 deg from flat, floor gap 9.915 mm on its barrel  *** NOTHING UNDER IT ***
 ```
 
 That last line is a real reading from before the seating rule existed, and

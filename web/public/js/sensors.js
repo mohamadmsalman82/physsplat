@@ -437,7 +437,7 @@ export class Sensors {
     const L = [`step ${s.step}${s.scene_at_rest ? "  (whole scene at rest)" : ""}`];
     for (const b of s.bodies) {
       L.push(`body ${b.id}: ${b.moving ? `MOVING ${b.speed_mms} mm/s, ${b.spin_rads} rad/s`
-        : b.held_still ? "still (held)" : "still"}` +
+        : b.held_still ? "still (settled)" : "still"}` +
         `, ${b.elevation_deg} deg from flat` +
         `, floor gap ${b.floor.gap_mm} mm on its ${b.floor.at.region}` +
         (b.floor.below_table_mm > 0.3 ? `  *** ${b.floor.below_table_mm} mm THROUGH THE TABLE ***` : "") +
