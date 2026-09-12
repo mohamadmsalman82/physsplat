@@ -159,7 +159,7 @@ export function initUI(app) {
     const readout = el("div", { class: "kv" });
     app.camera.onChange((s) => { followRow.set(s.following !== null); orbitRow.set(s.orbiting); });
     p.append(
-      group("Views", presets, el("div", { class: "hint" }, "Photo is the viewpoint the picture was taken from: the desk under the pencils is that photograph.")),
+      group("Views", presets, el("div", { class: "hint" }, "Photo is where the picture was taken from, recovered by fitting a camera to the pencils; the desk under them is that photograph.")),
       group("Motion", followRow, orbitRow, orbitSpeed, fov),
       group("Now", readout));
     setInterval(() => {

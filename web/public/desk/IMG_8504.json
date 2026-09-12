@@ -17,12 +17,34 @@
  ],
  "wall_rgb": null,
  "masked_fraction": 0.18456672138836772,
- "orientation": "image right = +x, image up = +y (camera-centric reconstruction frame)",
- "m_per_px": 7.494948813794298e-05,
- "origin_px": [
-  1448.8845645282456,
-  1425.5485019335183
+ "rect_m": [
+  -0.36903409724266095,
+  -0.18936966939755506,
+  0.1311505095118585,
+  0.18678287095600446
  ],
- "pile_area_px": 974111,
- "wall_y_m": 0.10670247600314789
+ "alpha": "IMG_8504_alpha.png",
+ "texture_px": [
+  2048,
+  1540
+ ],
+ "orientation": "texture row 0 is the +y edge, column 0 the -x edge; rect_m is [x0, y0, x1, y1]",
+ "camera": {
+  "camera_pos_m": [
+   0.13915909686844266,
+   0.005293927852116625,
+   0.1376667821570262
+  ],
+  "look_at_m": [
+   -0.0036309782092747455,
+   0.005256635635645061,
+   0.0
+  ],
+  "elevation_deg": 43.95345511500137,
+  "azimuth_deg": 0.014963831083957681,
+  "distance_m": 0.19834603560666314,
+  "fov_v_deg": 67.32394876743832,
+  "dice": 0.569207259858985
+ },
+ "registration": "scripts/register_photo.py: packet pencils rendered and matched to the photo's silhouettes"
 }

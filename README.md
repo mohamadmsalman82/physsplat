@@ -71,15 +71,28 @@ tabs:
 | tab | what it holds |
 |---|---|
 | Play | speed (0.1× to 1× slow motion, real physics at a smaller step rate), reset, drop a new pencil, lift one, pull the load-bearing one; grab strength and follow speed |
-| Camera | views: home, top, side, low (desk level), and **photo**, the viewpoint the picture was taken from; follow a pencil; auto-orbit; field of view; a live readout |
+| Camera | views: home, top, side, low (desk level), and **photo**, the viewpoint the picture was actually taken from, recovered per scene; follow a pencil; auto-orbit; field of view; a live readout |
 | Physics | gravity, pencil-on-pencil and pencil-on-desk friction, bounciness, all live; the defaults are the values that matched real pencils on the sensor checks |
-| Display | the photographed desk, **compare with the real photo** (the original photograph under the simulated pencils), shadows, filmic tone mapping; overlays for labels, contact points, velocity arrows and collider outlines |
+| Display | the photographed desk, **compare with the real photo** (the photograph laid on the desk plane under the simulated pencils, so the reconstruction's error is visible), shadows, filmic tone mapping; overlays for labels, contact points, velocity arrows and collider outlines |
 | Sensors | the live sensor report: which part of which pencil touches which part of which other, in millimetres from the point |
 
 Click a pencil to select it and a card shows its state, tilt, height, what it
 rests on and what it carries, with frame, follow, lift and nudge. The
 transport bar at the bottom has reset, pause, step and drop, with the step
 cost and playback rate stated. `?` lists the shortcuts; `H` hides everything.
+
+The desk under the pencils is the desk in the photograph, and it lies where
+the photograph says it lies. `scripts/register_photo.py` finds each
+photograph's camera by rendering the reconstructed pencils as silhouettes
+and matching them to the photograph's pencil mask (Dice overlap plus hue
+agreement, searched over pose and both handednesses, focal length from
+EXIF); `scripts/desk_texture.py` then warps the photograph onto the desk
+plane through that camera. The same fit is an honest measure of the
+reconstruction: IMG_8626 overlaps its photograph at Dice 0.75, the other
+three scenes at about 0.6, which is the right pencils in roughly the right
+places rather than the photographed pile, and IMG_8626's reconstruction has
+five pencils where the photograph has four. The **compare with the real
+photo** toggle shows exactly that.
 
 ## Why
 

@@ -49,6 +49,8 @@ const camera = setupCamera({
   getProxies: () => proxies,
   homeAzimuth: () => (sim?.packet?.bodies?.length ? bestAzimuth(sim.packet) : -1.0),
   target: CAM_HOME.target,
+  // where the photograph was taken from, when the scene's desk is registered
+  photoView: () => deskInfo?.camera ?? null,
 });
 // A pencil claims the LEFT button before OrbitControls sees the press.
 // Capture-phase listeners on the target run first, so by the time
@@ -98,6 +100,7 @@ scene.add(sun);
 // photo's edge, stands a wall where the photo has one, and paints the
 // background to match, so the scene is the photo with the pencils alive.
 let deskGroup = null;
+let deskInfo = null;          // the scene's desk JSON, camera included
 const deskBase = new THREE.Mesh(
   new THREE.PlaneGeometry(4, 4),
   new THREE.MeshStandardMaterial({ color: 0xbcbfc2, roughness: 0.9, metalness: 0 }));
@@ -140,24 +143,34 @@ async function loadDesk(name) {
   const wallRgb = d?.wall_rgb ?? [150, 154, 160];
   scene.background.setRGB(
     (wallRgb[0] + 2 * deskRgb[0]) / 765, (wallRgb[1] + 2 * deskRgb[1]) / 765, (wallRgb[2] + 2 * deskRgb[2]) / 765);
-  if (!d || !d.m_per_px) return;
+  deskInfo = d;
+  if (!d || !(d.rect_m || d.m_per_px)) return;
   deskGroup = new THREE.Group();
-  const [W, H] = d.image_px, top = d.crop_top_px ?? 0;
-  const w = W * d.m_per_px, h = (H - top) * d.m_per_px;
   const tex = await new THREE.TextureLoader().loadAsync(`./desk/${d.image}`);
   tex.colorSpace = THREE.SRGBColorSpace;
   deskTextures = { clean: tex, photo: null };
   displayState.comparePhoto = false;
   tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  let w, h, cx, cy, alphaMap;
+  if (d.rect_m) {
+    // registered: the texture IS the desk plane in metres, row 0 at +y
+    // (scripts/register_photo.py found the camera; desk_texture.py warped
+    // the photograph through it); its alpha is where the photo reached
+    const [x0, y0, x1, y1] = d.rect_m;
+    w = x1 - x0; h = y1 - y0; cx = (x0 + x1) / 2; cy = (y0 + y1) / 2;
+    try { alphaMap = await new THREE.TextureLoader().loadAsync(`./desk/${d.alpha}`); }
+    catch (e) { alphaMap = featherAlpha(256, Math.round(256 * h / w), 0.32); }
+  } else {
+    // unregistered: image right is +x, image up is +y, uniform scale
+    const [W, H] = d.image_px, top = d.crop_top_px ?? 0;
+    w = W * d.m_per_px; h = (H - top) * d.m_per_px;
+    cx = (W / 2 - d.origin_px[0]) * d.m_per_px; cy = -((top + (H - top) / 2) - d.origin_px[1]) * d.m_per_px;
+    alphaMap = featherAlpha(256, Math.round(256 * h / w), 0.32);
+  }
   const photo = new THREE.Mesh(
     new THREE.PlaneGeometry(w, h),
-    new THREE.MeshStandardMaterial({
-      map: tex, alphaMap: featherAlpha(256, Math.round(256 * h / w), 0.32),
-      transparent: true, roughness: 0.9, metalness: 0 }));
-  // image right is +x and image up is +y (see desk_texture.py); place the
-  // photo so its origin pixel sits at the world origin
-  const cx = W / 2, cy = top + (H - top) / 2;
-  photo.position.set((cx - d.origin_px[0]) * d.m_per_px, -(cy - d.origin_px[1]) * d.m_per_px, 0.00005);
+    new THREE.MeshStandardMaterial({ map: tex, alphaMap, transparent: true, roughness: 0.9, metalness: 0 }));
+  photo.position.set(cx, cy, 0.00005);
   photo.receiveShadow = true;
   deskGroup.add(photo);
   // No wall. The photographs' desks end 11 to 16 cm behind the pile, and a

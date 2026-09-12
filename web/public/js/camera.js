@@ -43,12 +43,12 @@ const PRESETS = {
   top: { elev: 1.45, dist: 0.34, az: "keep" },
   side: { elev: 0.16, dist: 0.34, az: "keep" },
   low: { elev: 0.07, dist: 0.26, az: "keep" },
-  // the photographs were taken from the -y side of the desk, phone tilted
-  // about 55 degrees down, close enough that the pencils filled the frame
+  // fallback for a scene without a registered camera: from the -y side,
+  // phone tilted about 55 degrees down, close enough to fill the frame
   photo: { elev: 0.96, dist: 0.40, az: -Math.PI / 2 },
 };
 
-export function setupCamera({ cam, controls, dom, getProxies, homeAzimuth, target }) {
+export function setupCamera({ cam, controls, dom, getProxies, homeAzimuth, target, photoView = () => null }) {
   controls.zoomToCursor = true;
   controls.screenSpacePanning = false;        // pan along the table
   controls.minPolarAngle = 0.08;              // almost straight down
@@ -118,6 +118,19 @@ export function setupCamera({ cam, controls, dom, getProxies, homeAzimuth, targe
   function preset(name) {
     const p = PRESETS[name];
     if (!p) return;
+    if (name === "photo") {
+      // the fitted camera, when the scene has one (scripts/register_photo.py):
+      // the photograph's own viewpoint, so the desk photo and the pile line
+      // up as well as the reconstruction allows
+      const v = photoView();
+      if (v && v.camera_pos_m && v.look_at_m) {
+        const c = new THREE.Vector3(...v.camera_pos_m), t = new THREE.Vector3(...v.look_at_m);
+        // never under the desk, and no closer than the controls allow
+        c.z = Math.max(c.z, 0.03);
+        if (c.distanceTo(t) < controls.minDistance) c.sub(t).setLength(controls.minDistance).add(t);
+        goTo(c, t); emit(); return;
+      }
+    }
     const az = p.az === "home" ? homeAzimuth() : p.az === "keep" ? azimuthNow() : p.az;
     const tgt = name === "home" || name === "photo" ? centreOfPile() : controls.target.clone();
     goTo(placeAt(p.elev, p.dist, az, tgt), tgt);

@@ -747,6 +747,42 @@ off equilibrium otherwise drops, kicks a neighbour, and sends it 15 cm.
 The learned model stays, in the repo, the paper and the demo, because the
 comparison is the finding.
 
+## Where the photograph lies (2026-09-11)
+
+The "compare with the real photo" view put the photograph under the pile
+60 degrees from where it belonged. The desk texture had assumed the
+reconstruction's frame was the image's (image right = +x, image up = +y)
+and scaled by the pile's area. Three attempts to do better, recorded
+because two failed:
+
+1. A homography from 2D pencil lines to the packet's pencil axes. Free
+   perspective collapsed to a degenerate solution; constrained to an
+   affine it fitted IMG_8626 at 18 px but only as a MIRROR image, which
+   turned out to be an artefact of the next problem.
+2. The lines themselves. On a crowded, foreshortened pile the mask's line
+   RANSAC merged collinear pencils into one 200 mm line (IMG_8504 found
+   two pencils of four) and split a grip from its barrel.
+3. Render and compare. The packet's pencils are drawn as silhouettes
+   through a candidate pinhole camera (EXIF focal, 26 mm equivalent) and
+   scored against the photograph's pencil mask: Dice plus hue agreement,
+   searched over azimuth, elevation, distance, roll and both handednesses,
+   then refined. No detection to go wrong. This is `scripts/register_photo.py`.
+
+What it found: handedness right in all four scenes (margins 0.10 to 0.20
+in score, IMG_8504 0.002, that scene being nearly side-on with two of
+four pencils hidden); cameras 20 to 24 cm from the pile at 44 to 75
+degrees of elevation; and layouts that are only approximate. Dice 0.75 for
+IMG_8626, about 0.6 for the rest. IMG_8626's packet has five pencils to
+the photograph's four. The reconstruction, not the simulator, is now the
+larger error in the compare view, and the view shows it rather than
+hiding it under a wrong placement.
+
+What changed: the desk texture is the photograph warped onto the desk
+plane through the fitted camera (a top-down image in metres, row 0 at +y,
+with an alpha where the photograph reached), the Photo view is the fitted
+camera, and the old uniform-scale placement remains as the fallback for a
+scene without a registration file.
+
 ## Round 9
 
 Pending.
