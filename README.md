@@ -2,218 +2,175 @@
 
 ![Left: a photograph of four BIC Matic Grip mechanical pencils lying in a lattice on a table. Right: the same four pencils reconstructed to 3D and simulated in the browser, from the same viewpoint.](docs/img/real-vs-sim.png)
 
-**A photo of everyday objects in. Interactive, learned 3D physics in your browser out.**
+**A learned, action-conditioned world model of rigid-body physics, built from a single photograph and run in the browser.**
 
 ### [Open the live demo →](https://physsplat.vercel.app)
 
-Drag a pencil to grab it, flick to poke, scroll or drag empty space to orbit.
-Every physics step runs client-side; there is no server in the loop.
-
 [![live demo](https://img.shields.io/badge/demo-physsplat.vercel.app-2ea44f)](https://physsplat.vercel.app)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-3776ab)](pyproject.toml)
-[![WebGPU](https://img.shields.io/badge/runtime-WebGPU-005a9c)](web/public/js)
+[![PyTorch](https://img.shields.io/badge/model-PyTorch-ee4c2c)](src/physsplat/model)
+[![WebGPU](https://img.shields.io/badge/runtime-WebGPU-005a9c)](web/public/js/gpu_net.js)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-PhysSplat turns a single photograph of simple objects on a flat surface (pencils
-today; the pipeline is object-agnostic) into a fully interactive 3D simulation.
-The scene is reconstructed to 3D, decomposed into rigid bodies without
-supervision, and simulated in the browser. Two engines share one interface: a
-rigid-body solver ([Rapier](https://github.com/dimforge/rapier), Rust compiled
-to WebAssembly), which is the default, and a graph neural network trained
-entirely on synthetic data with no hand-coded collision solver, behind
-`?engine=gnn`. You orbit the scene, grab and poke objects with the mouse, and
-watch them slide, pivot, and topple.
+PhysSplat is not a physics engine. There is no collision detection, constraint
+solver, or contact model written by hand. The dynamics of the scene are
+predicted by a graph neural network that learned contact, friction, sliding,
+pivoting and toppling from data, and that predicts each next state from the
+current state and the user's action.
+
+The input is one photograph of objects on a flat surface. The output is an
+interactive 3D scene in which every physics step is a forward pass of the
+network, executed on the viewer's GPU through hand-written WebGPU compute
+kernels. There is no server in the loop.
+
+Drag a pencil to grab it, flick to poke, and scroll or drag empty space to orbit.
+
+## The world model
+
+The system learns a transition function
 
 ```
-photo ──► single-image 3D ──► unsupervised object ──► rigid-body   ──► interactive
-.jpg      reconstruction      decomposition           solver, or GNN  three.js demo
-          (TripoSR)           + particle sampler      (per body)      custom WebGPU
-          └────────── once, per scene ──────────┘     └─ every frame, in-browser ─┘
+s_{t+1} = f_θ(s_t, a_t)
 ```
 
-## Two engines, and why the solver ships by default
-
-The research question was whether a learned simulator could carry a photo of
-real objects into a plausible interactive scene, and the answer is: partly.
-Eight blind review rounds and three rounds of player reports went into fencing
-the learned model's failure modes with analytic rules (free flight, pivoting,
-settling, seating, stiction, swept collision, held-body caps), each measured
-and each earning its place, and the pencils still did not lie flat, still
-hovered, still twitched. The one change that came out of that work, making
-every pencil one canonical shape, is also what made a classical solver usable:
-there was finally a clean collider to give it. Measured on the same
-sensor-driven checks, all four scenes:
-
-| behaviour | learned model + rules | Rapier |
-|---|---|---|
-| lone pencil dropped on the desk | pinned wherever it stopped, up to 5° | lies at 0.5° on its grip |
-| holding a pencil still at its centre | 3 to 35° of tilt, up to 13.8 rad/s | 0.2 to 3.8°, 0.04 to 0.40 rad/s |
-| end grab lifted clear | dangles | dangles, 90.0° |
-| resting gap to what a pencil sits on | 0.0 mm after a seating rule | 0.0 mm |
-| 250 mm drop onto the pile, worst overlap | 0.1 to 3.4 mm | 0.1 to 1.0 mm |
-| cost per 1/60 s step | 15 to 33 ms (WebGPU) | 0.5 ms (WASM) |
-
-The learned model remains in the repo, in the paper, and in the demo, because
-the comparison is the interesting result. See `web/public/js/rapier_sim.js`
-for what the solver taught in turn: a truly round pencil rolls off a pile at a
-nudge (the clip is a collider now, standing proud as the real one does), plastic
-on plastic is nearer 0.28 than 0.42, and an impact at 2.2 m/s needs 16 substeps
-a frame not to sink into the pile.
-
-## The interface
-
-![The PhysSplat interface: a top bar with four scene thumbnails and the engine badge; five simulated pencils on the photographed desk with a label over each one and yellow dots where they touch; a card for the selected pencil reading at rest, 0.5° from flat, on the desk, resting on the desk, carrying pencil 3; the Display tab of the dock with its toggles; the transport bar reading Rapier, 1.2 ms per step, real time.](docs/img/ui.png)
-
-The page is a sandbox, not a viewer. The top bar picks a scene from photo
-thumbnails and shows which engine is running; the dock on the right has five
-tabs:
-
-| tab | what it holds |
+| term | definition |
 |---|---|
-| Play | speed (0.1× to 1× slow motion, real physics at a smaller step rate), reset, drop a new pencil, lift one, pull the load-bearing one; grab strength and follow speed |
-| Camera | views: home, top, side, low (desk level), and **photo**, the viewpoint the picture was actually taken from, recovered per scene; follow a pencil; auto-orbit; field of view; a live readout |
-| Physics | gravity, pencil-on-pencil and pencil-on-desk friction, bounciness, all live; the defaults are the values that matched real pencils on the sensor checks |
-| Display | the photographed desk, **compare with the real photo** (the photograph laid on the desk plane under the simulated pencils, so the reconstruction's error is visible), shadows, filmic tone mapping; overlays for labels, contact points, velocity arrows and collider outlines |
-| Sensors | the live sensor report: which part of which pencil touches which part of which other, in millimetres from the point |
+| state `s_t` | every object as a cloud of surface particles, with body pose, a five-step velocity history, mass and inertia |
+| action `a_t` | a force applied to a body at a 3D point (a grab or a poke) |
+| model `f_θ` | an encode-process-decode graph neural network over a contact graph |
 
-Click a pencil to select it and a card shows its state, tilt, height, what it
-rests on and what it carries, with frame, follow, lift and nudge. The
-transport bar at the bottom has reset, pause, step and drop, with the step
-cost and playback rate stated. `?` lists the shortcuts; `H` hides everything.
-
-The desk under the pencils is the desk in the photograph, and it lies where
-the photograph says it lies. `scripts/register_photo.py` finds each
-photograph's camera by rendering the reconstructed pencils as silhouettes
-and matching them to the photograph's pencil mask (Dice overlap plus hue
-agreement, searched over pose and both handednesses, focal length from
-EXIF); `scripts/desk_texture.py` then warps the photograph onto the desk
-plane through that camera. The same fit is an honest measure of the
-reconstruction: IMG_8626 overlaps its photograph at Dice 0.75, the other
-three scenes at about 0.6, which is the right pencils in roughly the right
-places rather than the photographed pile, and IMG_8626's reconstruction has
-five pencils where the photograph has four. The **compare with the real
-photo** toggle shows exactly that.
-
-## Why
-
-Generative 3D reconstruction produces photorealistic scenes that are physically
-inert — no mass, no contact, no gravity. Classical physics engines simulate rigid
-bodies robustly but require clean meshes and hand-tuned parameters, so they
-cannot ingest a photograph. PhysSplat bridges the two with a learned simulator
-that operates on surface point clouds: exactly the representation a photo
-reconstruction can provide.
+The model is run autoregressively: each prediction becomes the next input,
+closed-loop against live user input, for as long as the scene is open.
 
 ## How it works
 
-Three ideas carry the project:
+```
+photo ──► single-image 3D ──► object          ──► particle  ──► learned world model ──► interactive
+.jpg      reconstruction      decomposition       sampler       (GNN, WebGPU)            3D scene
+          (TripoSR)           (unsupervised)
+          └──────────────── once per scene ────────────────┘    └──── every frame, in the browser ────┘
+```
 
-1. **Rigidity by construction.** The GNN detects contact through particle-level
-   message passing, but decodes one linear + one angular acceleration *per body*
-   and integrates on SE(3), so objects can never deform or "melt" over long
-   rollouts.
-2. **Noise injection.** Training inputs are corrupted with small random-walk
-   noise against clean targets, so the model learns to correct its own errors —
-   the difference between rollouts that drift in seconds and rollouts that stay
-   plausible indefinitely.
-3. **One shared sampler.** The exact same fixed-spacing surface sampler dots
-   synthetic training objects and photo-reconstructed objects with physics
-   particles, making real scenes statistically indistinguishable from training
-   data. That is the whole sim-to-real transfer mechanism.
+**1. Synthetic data.** PyBullet generates 5,000 randomized trajectories across
+seven scene regimes (stacks, scatters, drops, pokes, grabs), with randomized
+density, friction and restitution. Trajectories that violate physical
+invariants are rejected. The simulator is used only to produce training data;
+it is not present at inference.
 
-Training data is manufactured, not collected: PyBullet simulates thousands of
-randomized scenes (stacks, scatters, drops, random pokes) and the network learns
-to imitate it — from a photo-compatible representation.
+**2. Representation.** A single fixed-spacing surface sampler converts every
+object, synthetic or reconstructed from a photo, into physics particles. Real
+scenes are therefore expressed in exactly the representation the model was
+trained on. This shared sampler is the sim-to-real transfer mechanism.
 
-## What makes this hard
+**3. Contact graph.** At each step, particles within a contact radius are
+connected, including at their velocity-extrapolated positions so that fast
+approaches are detected one step early. Edges between different bodies carry
+contact. The model sees only relative displacements, never absolute positions.
 
-None of the interesting failures show up in a single-step loss. A learned
-simulator is only as good as its worst rollout, so the project is built around a
-scorecard rather than a training curve:
+**4. Graph network.** MLP encoders lift node and edge features to 128
+dimensions; ten residual message-passing blocks propagate contact information
+through the graph; the decoder pools latents per body and outputs one linear
+and one angular acceleration per object. Rigidity is exact by construction:
+objects cannot deform over a rollout.
 
-| failure mode | metric | best run (63.6) |
+**5. Integration.** Gravity is applied analytically and the network predicts
+only the contact and friction residual. Bodies are integrated on SE(3) with a
+differentiable semi-implicit Euler step.
+
+**6. Training.** 150,000 single-step iterations on Apple Silicon (PyTorch,
+MPS), with random-walk noise injected into inputs against clean targets so the
+model learns to correct its own drift. This is followed by rollout fine-tuning
+that backpropagates through up to 24 unrolled steps.
+
+**7. Photo to scene.** TripoSR reconstructs the photograph in 3D; RANSAC line
+segmentation decomposes it into individual bodies without supervision; each
+body is canonicalized and resampled into particles. The photograph's camera is
+recovered by matching rendered silhouettes to the image, so the simulated
+scene can be overlaid on the original photo.
+
+**8. Browser inference.** The model is exported to ONNX and reimplemented as
+five hand-written WGSL compute kernels in a single WebGPU pass. The JavaScript
+graph builder, integrator and network are verified against PyTorch to micron
+precision. A four-to-five body scene steps in 15 to 33 ms. ONNX Runtime Web's
+WebGPU provider measured 190 to 490 ms on the same model; it remains as the
+fallback where WebGPU is unavailable.
+
+## Evaluation
+
+Single-step loss does not measure a world model. The model is scored on long
+rollouts over a held-out synthetic test set:
+
+| failure mode | metric | best run |
 |---|---|---|
-| drift over a rollout | `trans_150` — translation error after 150 steps | 1.9 cm |
-| bodies sinking into each other | `surface_pen` — worst surface penetration | 1.50 mm |
-| settled piles creeping | `stability` — fraction of settled scenes that stay settled | 0.83 |
-| what is resting on what | `support_jaccard` — contact set vs ground truth | 0.60 |
+| drift | translation error after 150 steps | 1.9 cm |
+| interpenetration | worst surface penetration | 1.50 mm |
+| rest stability | fraction of settled scenes that remain settled | 0.83 |
+| support structure | contact set vs ground truth (Jaccard) | 0.60 |
 
-Then there are the failures a metric never sees, which is what the blind-tester
-ledger is for ([`docs/demo-critic.md`](docs/demo-critic.md)). A human playing the
-demo caught things six automated rounds had not isolated: jitter under a moving
-cursor, pencils hovering and sinking because the drawn barrel and the simulated
-body disagreed about the surface by 1.7 mm, and tunnelling under fast pulls and
-high drops. Every fix is pinned by a headless regression test that drives the
-browser simulator with no page (`web/test/rest.mjs`, `web/test/interact.mjs`).
+An automated improvement loop proposed and scored fine-tuning experiments,
+raising the composite score from 31.5 to 61.0. Every analytic rule applied
+around the network was then accepted or rejected on the same scorecard:
 
-## What the network is not allowed to claim
-
-A learned simulator run far outside its training distribution (photo-reconstructed
-pencils, not PyBullet capsules) will assert things that are not physics. Rather
-than hide that, the demo states the invariants explicitly and lets the
-diagnostics show when they bind:
-
-- **Free flight.** A body touching nothing feels only gravity and the applied
-  force, so its learned residual is zero. Without this a released pencil
-  hovered: the network had never seen a motionless unsupported body.
-- **Support and pivot.** Support is counted only from below; a body whose centre
-  of mass is outside its support polygon swings about the nearest support edge
-  until it lies flat, instead of balancing on its end.
-- **No free energy — written, measured, and turned off.** Contact with static
-  things cannot add mechanical energy, and an applied force adds only the work it
-  does. Each step is trial-integrated and the residual scaled down if it would
-  break that. It fixes what it was written for (a resting pencil reared to 89° on
-  its own) and still costs more than it buys, because a rule that cannot separate
-  a spurious energy gain from a real one also damps genuine collision response.
-  The rearing is prevented by support-and-pivot instead. It stays behind
-  `--energy` so the number is reproducible.
-
-`scripts/evaluate.py` exposes every rule as a flag, so each one was scored on the
-synthetic test set before being kept or dropped. Two were dropped — the energy
-rule, tried twice, and residual smoothing:
-
-| analytic rule | composite | verdict |
+| configuration | composite | decision |
 |---|---|---|
-| *learned model alone* | 61.0 | baseline |
-| free flight — zero residual for a body touching nothing | 62.3 | **kept** |
-| angular contact fade — torque vanishes as a body separates | 63.6 | **kept** |
-| no free energy, whole scene every step | 42.4 | rejected — cuts contact impulses |
-| no free energy, quiescent bodies only | 48.1 | rejected — still biases resting contact down |
-| two-tap residual mean | 34.2 | rejected — delays the contact response |
+| learned model alone | 61.0 | baseline |
+| + free flight (zero residual for a body touching nothing) | 62.3 | kept |
+| + angular contact fade (torque vanishes as a body separates) | 63.6 | kept |
+| + no free energy, every step | 42.4 | rejected |
+| + two-tap residual mean | 34.2 | rejected |
 
-Composite is 0–100 on the synthetic test set; the energy and smoothing rows are
-measured on top of free flight. Everything these rules do is recorded per step
-and visible in the diagnostics, so a reader can always tell the model's answer
-from the correction ([`docs/diagnostics.md`](docs/diagnostics.md)).
+Every correction is recorded per step, so the model's prediction is always
+distinguishable from a rule's ([`docs/diagnostics.md`](docs/diagnostics.md)).
+The live demo was additionally reviewed over multiple rounds by independent
+blind testers, with every fix pinned by a headless regression test
+([`docs/demo-critic.md`](docs/demo-critic.md)).
+
+## Classical baseline
+
+The demo includes [Rapier](https://github.com/dimforge/rapier), a conventional
+rigid-body solver compiled to WebAssembly, behind `?engine=rapier`. Both engines
+share one interface and are measured on the same sensor checks:
+
+| behaviour | learned world model | Rapier |
+|---|---|---|
+| lone pencil dropped on the desk | settles within 5° of flat | 0.5° |
+| pencil held still at its centre | 3 to 35° of tilt | 0.2 to 3.8° |
+| end grab lifted clear | dangles | dangles |
+| 250 mm drop onto the pile, worst overlap | 0.1 to 3.4 mm | 0.1 to 1.0 mm |
+| cost per 1/60 s step | 15 to 33 ms (WebGPU) | 0.5 ms (WASM) |
+
+The solver is programmed with the laws of contact; the world model acquired
+them from 5,000 trajectories.
+
+## What this project demonstrates
+
+- **World modelling:** an action-conditioned dynamics model, stable under long autoregressive rollout and closed-loop interaction.
+- **Geometric deep learning:** relational inductive biases, per-body rigid decoding, SE(3) integration, translation-invariant features.
+- **Sim-to-real transfer:** a model trained only on synthetic data, applied to objects reconstructed from a real photograph.
+- **3D computer vision:** single-image reconstruction, unsupervised object decomposition, camera pose recovery.
+- **ML systems:** synthetic data generation at scale, training on Apple Silicon, ONNX export, custom GPU kernels for in-browser inference.
+- **Evaluation:** rollout-level metrics, an automated experiment loop with a provenance ledger, and ablations for every rule.
+
+## Interface
+
+![The PhysSplat interface: a top bar with four scene thumbnails and the engine badge; five simulated pencils on the photographed desk with a label over each one and yellow dots where they touch; a card for the selected pencil reading at rest, 0.5° from flat, on the desk, resting on the desk, carrying pencil 3; the Display tab of the dock with its toggles; the transport bar reading Rapier, 1.2 ms per step, real time.](docs/img/ui.png)
+
+The top bar selects a scene and switches the engine. The dock provides
+playback controls (**Play**), camera views including the photograph's own
+viewpoint (**Camera**), live physical parameters for the baseline solver
+(**Physics**), overlays for contacts, velocities and an overlay of the real
+photograph (**Display**), and a live contact report (**Sensors**). Selecting a
+pencil shows its state, tilt, support and load. `?` lists the shortcuts.
 
 ## Documentation
 
-| document | what it covers |
+| document | contents |
 |---|---|
-| [`docs/PhysSplat.pdf`](docs/PhysSplat.pdf) | the design document: architecture, the mathematics of the learned simulator, data spec, evaluation plan |
-| [`docs/PhysSplat-Tutorial.pdf`](docs/PhysSplat-Tutorial.pdf) | a 70-step build guide with background theory, per-step checkpoints, and common traps |
+| [`docs/PhysSplat.pdf`](docs/PhysSplat.pdf) | design document: architecture, mathematics of the learned simulator, data specification, evaluation plan |
+| [`docs/PhysSplat-Tutorial.pdf`](docs/PhysSplat-Tutorial.pdf) | 70-step build guide with background theory and per-step checkpoints |
+| [`eval/REPORT.md`](eval/REPORT.md) | the scorecard, with the decision for every experiment |
 | [`docs/diagnostics.md`](docs/diagnostics.md) | the demo's diagnostic API: per-step motion and contact data, anomaly detectors, scripted probes |
-| [`docs/demo-critic.md`](docs/demo-critic.md) | the blind-tester ledger: what each round scored, what it measured, and what changed |
-| [`eval/REPORT.md`](eval/REPORT.md) | the scorecard itself, with the accept/reject decision for every experiment |
-
-## Status
-
-Early development, built in phases — each ends with a runnable artifact. Phases
-0 through 8 are complete.
-
-<details>
-<summary><b>The phase list</b></summary>
-
-- [x] **Phase 0** — environment, package skeleton, shared constants
-- [x] **Phase 1** — synthetic dataset generator (PyBullet → HDF5): 5,000 trajectories across 7 scene regimes with a poke-and-grab action channel, physics-invariant rejection filters, and visual audit tooling
-- [x] **Phase 2** — the graph network simulator: predictive-edge contact graphs, per-body rigid decoder, analytic Newton-Euler integration, overfit gate passed
-- [x] **Phase 3** — training on Apple Silicon (150k single-step steps), then a self-improving loop of physics-scored fine-tuning experiments: composite score 31.5 → 61.0, and 63.6 with the two analytic rules the same scorecard kept (`eval/REPORT.md`, `docs/eval-loop.md`)
-- [x] **Phase 4** — extensive rollout scorecard (drift, penetration, rest stability, support-removal fidelity, energy) with per-regime breakdown, provenance ledger, and side-by-side films
-- [x] **Phase 5** — local interactive demo (WebSocket server + three.js client, closed-loop spring grabs)
-- [x] **Phase 6** — photo → scene pipeline: TripoSR reconstruction, RANSAC line segmentation of pencils, four real-photo scenes packeted
-- [x] **Phase 7** — in-browser physics: race-free ONNX export, JS runtime parity-verified to microns against Python, then a custom WebGPU backend (five hand-written WGSL kernels in one compute pass; ONNX Runtime Web's WebGPU provider measured 190-490 ms/step on the same model) so a 4-5 pencil scene steps in 15-24 ms on an M-series laptop, real time on a visible tab
-- [x] **Phase 8** — public deployment on Vercel, plus a blind-tester loop: an independent agent plays the live demo, scores it harshly, and its findings drive the next round of fixes (`docs/demo-critic.md`). Six rounds so far, plus reports from a human playing it, which caught things the automated rounds had not isolated
-
-</details>
+| [`docs/demo-critic.md`](docs/demo-critic.md) | the blind-tester ledger |
 
 <details>
 <summary><b>Repository layout</b></summary>
@@ -223,23 +180,36 @@ src/physsplat/
   common/     shared constants + the particle sampler (used by datagen AND recon)
   datagen/    PyBullet scene generation, trajectory recording, HDF5 writer
   model/      graph builder, encode-process-decode GNN, SE(3) integrator
-  train/      dataset, noise injection, training loop
-  eval/       rollout metrics, comparison videos
+  train/      dataset, noise injection, training and rollout fine-tuning
+  eval/       rollout metrics, scorecard, provenance ledger
   recon/      photo → 3D reconstruction → bodies → physics particles
-  export/     ONNX export + Python/browser parity tests
+  export/     ONNX export
 scripts/      runnable entry points (one per task)
-web/          static three.js app + client-side physics (js/sim.js, js/gpu_net.js)
+web/          three.js app + in-browser inference (js/sim.js, js/gpu_net.js)
 web/test/     parity, end-to-end, diagnostics, rest and interaction suites (npm test)
 docs/         design document and build tutorial (LaTeX + PDF)
 ```
 
-Each package's `__init__.py` documents what lives there and why.
+</details>
+
+<details>
+<summary><b>Build phases</b></summary>
+
+- [x] **Phase 0:** environment, package skeleton, shared constants
+- [x] **Phase 1:** synthetic dataset generator (PyBullet → HDF5), 5,000 trajectories, 7 regimes, action channel, invariant-based rejection filters
+- [x] **Phase 2:** graph network simulator, predictive contact edges, per-body rigid decoder, SE(3) integration
+- [x] **Phase 3:** training on Apple Silicon and an automated fine-tuning loop, composite 31.5 → 63.6
+- [x] **Phase 4:** rollout scorecard with per-regime breakdown, provenance ledger, comparison films
+- [x] **Phase 5:** local interactive demo with closed-loop spring grabs
+- [x] **Phase 6:** photo → scene pipeline: TripoSR, unsupervised segmentation, four real-photo scenes
+- [x] **Phase 7:** in-browser inference: ONNX export, micron-level parity, custom WebGPU kernels
+- [x] **Phase 8:** public deployment, blind-tester review loop, classical baseline
 
 </details>
 
 ## Setup
 
-Requires [uv](https://docs.astral.sh/uv/) and (for later phases) Node 20+.
+Requires [uv](https://docs.astral.sh/uv/) and Node 20+.
 
 ```sh
 uv sync
@@ -264,18 +234,11 @@ uv caches the built wheel, so this is a once-per-machine fix.
 <summary>Note: developing inside an iCloud-synced folder</summary>
 
 iCloud's "Optimize Mac Storage" evicts file contents under `~/Desktop`,
-replacing them with dataless stubs, and flags files hidden. Two concrete
-failures this caused: Python 3.12 silently skips hidden `.pth` files (the
-project vanished from `sys.path`), and cold imports took 60+ seconds while
-evicted libraries re-downloaded. Mitigations in place:
-
-- the real venv lives in `.venv.nosync/` (iCloud never syncs `*.nosync`),
-  with `.venv` a symlink to it; `uv sync` works through the symlink
-- large generated data goes to `data/raw.nosync/` for the same reason
-
-If imports get slow or modules go missing, check for eviction:
-`find <dir> -type f -flags +dataless | wc -l`. The durable fix is moving the
-repo off the synced Desktop or disabling Desktop sync in iCloud settings.
+replacing them with dataless stubs and flagging files hidden. Python 3.12
+silently skips hidden `.pth` files, and cold imports can take 60+ seconds.
+The real venv lives in `.venv.nosync/` with `.venv` a symlink to it, and large
+generated data goes to `data/raw.nosync/`. To check for eviction:
+`find <dir> -type f -flags +dataless | wc -l`.
 </details>
 
 ## License

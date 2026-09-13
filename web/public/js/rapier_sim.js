@@ -4,8 +4,8 @@
  * Rapier (github.com/dimforge/rapier) is a Rust physics engine compiled to
  * WebAssembly: continuous collision detection, Coulomb friction, restitution,
  * sleeping, and a solver that stacks long thin bodies without drifting.
- * This is the engine the demo runs by default. The learned graph network
- * (sim.js) is still here behind ?engine=gnn, and the two present the same
+ * This is the classical baseline, behind ?engine=rapier. The learned graph
+ * network (sim.js) is the demo's default engine, and the two present the same
  * interface, so the diagnostics, the sensors, the probes and the page
  * itself do not know which one is underneath.
  *

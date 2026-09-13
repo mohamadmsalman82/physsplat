@@ -224,7 +224,7 @@ const displayState = { desk: true, comparePhoto: false, shadows: true, filmic: f
 const app = {
   scenes: [], scene: null,
   loadScene: (n) => loadScene(n),
-  get engine() { return Q.get("engine") === "gnn" ? "gnn" : "rapier"; },
+  get engine() { return Q.get("engine") === "rapier" ? "rapier" : "gnn"; },
   switchEngine(name) {
     const u = new URL(location.href); u.searchParams.set("engine", name);
     if (app.scene) u.searchParams.set("scene", app.scene);
@@ -871,11 +871,10 @@ async function physicsLoop() {
     // Backend: custom WebGPU kernels (js/gpu_net.js, ~30 ms/step) when
     // WebGPU exists; otherwise ONNX Runtime Web on wasm (correct, slow).
     // ?backend=ort forces the fallback for comparison.
-    // The engine. Rapier, a real rigid-body solver, by default; the learned
-    // graph network behind ?engine=gnn. Both present the same interface, so
-    // everything after this line is the same code. See js/rapier_sim.js for
-    // why the solver is the default.
-    const engine = q.get("engine") === "gnn" ? "gnn" : "rapier";
+    // The engine. The learned graph network by default; Rapier, a classical
+    // rigid-body solver, behind ?engine=rapier as the baseline. Both present
+    // the same interface, so everything after this line is the same code.
+    const engine = q.get("engine") === "rapier" ? "rapier" : "gnn";
     let backend = null;
     if (engine === "rapier") {
       const mod = await import("../vendor/rapier.mjs");
