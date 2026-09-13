@@ -165,29 +165,20 @@
   /* intro notice */
   #intro { position: absolute; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center;
            padding: 16px; background: rgba(6, 8, 11, 0.62); }
-  #intro .sheet { width: 600px; max-width: 100%; max-height: calc(100vh - 32px); overflow-y: auto;
+  #intro .sheet { width: 440px; max-width: 100%; max-height: calc(100vh - 32px); overflow-y: auto;
                   padding: 24px 26px 20px; background: rgba(18, 21, 27, 0.92); }
   #intro .eyebrow { margin: 0 0 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; color: var(--accent); }
-  #intro h2 { margin: 0 0 10px; font-size: 20px; font-weight: 700; line-height: 1.25; }
-  #intro p { margin: 0 0 12px; color: var(--muted); font-size: 13.5px; line-height: 1.55; }
-  #intro p b { color: var(--text); font-weight: 600; }
-  #intro h3 { margin: 18px 0 8px; font-size: 11px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: 0.4px; }
-  #intro ol { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; counter-reset: step; }
-  #intro li.step { counter-increment: step; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-s);
-                   background: var(--panel-2); font-size: 12.5px; color: var(--muted); line-height: 1.45; }
-  #intro li.step b { display: block; margin-bottom: 2px; color: var(--text); font-weight: 600; }
-  #intro li.step b::before { content: counter(step) "  "; color: var(--accent); font-family: var(--mono); font-weight: 500; }
-  #intro ul { margin: 0; padding: 0; list-style: none; }
-  #intro ul li { display: flex; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
-  #intro ul li:last-child { border-bottom: 0; }
-  #intro ul li span:first-child { flex: 0 0 38%; color: var(--text); }
+  #intro h2 { margin: 0 0 8px; font-size: 19px; font-weight: 700; line-height: 1.25; }
+  #intro p { margin: 0; color: var(--muted); font-size: 13.5px; line-height: 1.5; }
+  #intro h3 { margin: 18px 0 6px; font-size: 11px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: 0.4px; }
+  #intro ol, #intro ul { margin: 0; padding-left: 20px; color: var(--text); font-size: 13.5px; line-height: 1.5; }
+  #intro li { margin: 3px 0; }
+  #intro li::marker { color: var(--accent); }
   #intro .foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px;
                  padding-top: 14px; border-top: 1px solid var(--line); }
   #intro .foot small { color: var(--faint); font-size: 11.5px; }
   #intro .foot .btn { padding: 9px 22px; font-size: 13.5px; font-weight: 600; }
   @media (max-width: 560px) {
-    #intro ol { grid-template-columns: 1fr; }
-    #intro ul li { flex-direction: column; gap: 2px; }
     #intro .foot { flex-direction: column-reverse; align-items: stretch; }
   }
   kbd { padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line-2); background: var(--panel-2); font-family: var(--mono); font-size: 11px; }
@@ -260,30 +251,25 @@
   <div id="intro" role="dialog" aria-modal="true" aria-labelledby="intro-title">
     <div class="sheet glass">
       <p class="eyebrow">A learned world model</p>
-      <h2 id="intro-title">These pencils are not driven by a physics engine.</h2>
-      <p>The scene was reconstructed in 3D from <b>a single photograph</b>. There is no hand-written
-        collision, contact or friction code. A <b>graph neural network</b> predicts every next frame
-        from the current one and your input, running on your GPU, with no server in the loop.</p>
+      <h2 id="intro-title">No physics engine. A neural network.</h2>
+      <p>These pencils were rebuilt in 3D from one photo. Their motion is predicted by a neural network, live in your browser.</p>
 
       <h3>How it works</h3>
       <ol>
-        <li class="step"><b>Learn</b>Trained on 5,000 simulated scenes of objects colliding, stacking and being pushed.</li>
-        <li class="step"><b>Reconstruct</b>The photo is lifted to 3D, split into objects, and sampled into surface particles.</li>
-        <li class="step"><b>Predict</b>Each frame, touching particles form a contact graph; the network outputs every object's acceleration.</li>
-        <li class="step"><b>Run</b>Custom WebGPU kernels step the model 60 times a second, entirely in your browser.</li>
+        <li>Trained on 5,000 simulated scenes</li>
+        <li>Photo turned into 3D objects</li>
+        <li>Network predicts every next frame</li>
       </ol>
 
       <h3>How to use it</h3>
       <ul>
-        <li><span>Drag a pencil</span><span>grab and lift it; a quick flick pokes it</span></li>
-        <li><span>Drag empty space, scroll</span><span>orbit and zoom the camera</span></li>
-        <li><span>Photos in the top bar</span><span>switch between reconstructed scenes</span></li>
-        <li><span>Engine badge</span><span>compare against Rapier, a conventional physics solver</span></li>
-        <li><span>Camera › photo, Display › real photo</span><span>see the photograph the scene came from</span></li>
+        <li>Drag a pencil to grab it, flick to poke</li>
+        <li>Drag empty space to orbit, scroll to zoom</li>
+        <li>Pick a photo in the top bar to switch scenes</li>
       </ul>
 
       <div class="foot">
-        <small>Best in a WebGPU browser such as Chrome or Edge. Press <kbd>?</kbd> for all controls.</small>
+        <small>Press <kbd>?</kbd> for all controls.</small>
         <button class="btn primary" id="introcontinue" autofocus>Continue</button>
       </div>
     </div>
