@@ -153,7 +153,7 @@ them from 5,000 trajectories.
 
 ## Interface
 
-![The PhysSplat interface: a top bar with four scene thumbnails and the engine badge reading learned GNN; five simulated pencils on the photographed desk with a label over each one and yellow dots where they touch; a card for the selected pencil reading at rest, 0.0° from flat, on the desk, resting on the desk, carrying pencil 4; the Display tab of the dock with its toggles; the transport bar reading gpu, 18.1 ms per step.](docs/img/ui.png)
+![The PhysSplat interface: a top bar with four scene thumbnails and the engine badge reading learned GNN; five simulated pencils casting shadows on the photographed desk, which fades into a horizon, with a label over each one and yellow dots where they touch; a card for the selected pencil reading at rest, 0.0° from flat, on the desk, resting on the desk, carrying pencil 4; the Display tab of the dock with its toggles; the transport bar reading gpu, 21.4 ms per step.](docs/img/ui.png)
 
 The top bar selects a scene and switches the engine. The dock provides
 playback controls (**Play**), camera views including the photograph's own

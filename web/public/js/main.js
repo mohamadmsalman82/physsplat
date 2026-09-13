@@ -72,12 +72,16 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 // are divided by pi in the shader, so for a white desk (albedo 0.56 linear)
 // to render at the photograph's brightness the three together have to sum
 // to about pi on a horizontal surface. At 0.42 + 0.38 + 1.35 the desk came
-// out a dim grey and the pencils dull with it.
-const ambient = new THREE.AmbientLight(0xffffff, 0.95);
-const hemi = new THREE.HemisphereLight(0xffffff, 0xc8c8cc, 0.80);
+// out a dim grey and the pencils dull with it. At 0.95 + 0.80 + 2.0 it went
+// past pi: the fill alone rendered the desk white, so a shadow, which only
+// removes the sun, was white too and the scene read as a flat cut-out. The
+// fill is now under half of what lands on the desk, the sun is lower and
+// stronger, and the desk under a pencil's shadow is visibly darker.
+const ambient = new THREE.AmbientLight(0xffffff, 0.75);
+const hemi = new THREE.HemisphereLight(0xffffff, 0xc8c8cc, 0.70);
 scene.add(ambient, hemi);
-const sun = new THREE.DirectionalLight(0xffffff, 2.0);
-sun.position.set(-0.35, 0.30, 0.85);         // upper left, slightly behind
+const sun = new THREE.DirectionalLight(0xfffaf2, 2.4);
+sun.position.set(-0.40, 0.32, 0.78);         // upper left, slightly behind
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.near = 0.1; sun.shadow.camera.far = 3;
@@ -101,12 +105,57 @@ scene.add(sun);
 // background to match, so the scene is the photo with the pencils alive.
 let deskGroup = null;
 let deskInfo = null;          // the scene's desk JSON, camera included
+// Depth cues for a desk that is otherwise one flat colour: the plain desk
+// darkens gently away from the pile, fog carries it into a horizon, and the
+// background is a gradient from that horizon up to a darker room, so the
+// table reads as a surface receding from the camera rather than a backdrop.
+function radialFalloff(size = 512, inner = 0.08, edge = 0.72) {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d");
+  const r = g.createRadialGradient(size / 2, size / 2, size * inner, size / 2, size / 2, size / 2);
+  r.addColorStop(0, "#ffffff");
+  r.addColorStop(1, `rgb(${Math.round(255 * edge)},${Math.round(255 * edge)},${Math.round(255 * edge)})`);
+  g.fillStyle = r; g.fillRect(0, 0, size, size);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+// The sky is a dome in world space, not a screen-space gradient: it meets
+// the desk at the fog's colour wherever the horizon falls in the frame, and
+// darkens upward, so orbiting low shows a desk running out to a horizon
+// instead of a flat backdrop or a hard edge.
+const SKY_R = 6;
+const skyGeo = new THREE.SphereGeometry(SKY_R, 48, 24);
+skyGeo.setAttribute("color", new THREE.Float32BufferAttribute(new Float32Array(skyGeo.attributes.position.count * 3), 3));
+const sky = new THREE.Mesh(skyGeo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, fog: false, depthWrite: false }));
+sky.renderOrder = -1;
+scene.add(sky);
+/** Paint the dome: `horizon` at and below the desk, darker toward the zenith. */
+function paintSky(horizon) {
+  const pos = skyGeo.attributes.position, col = skyGeo.attributes.color;
+  const zenith = horizon.clone().multiplyScalar(0.34);
+  const c = new THREE.Color();
+  for (let i = 0; i < pos.count; i++) {
+    const t = Math.max(0, pos.getZ(i) / SKY_R);           // 0 at the horizon, 1 overhead
+    c.copy(horizon).lerp(zenith, Math.pow(t, 0.8));
+    col.setXYZ(i, c.r, c.g, c.b);
+  }
+  col.needsUpdate = true;
+  scene.background = horizon.clone();
+}
+// The room environment lights the desk as well as the three lights above,
+// and at full strength it alone lifted the desk to white; the pencils keep
+// it at full strength for their reflections, the desk takes a quarter.
+const DESK_ENV = 0.25;
 const deskBase = new THREE.Mesh(
-  new THREE.PlaneGeometry(4, 4),
-  new THREE.MeshStandardMaterial({ color: 0xbcbfc2, roughness: 0.9, metalness: 0 }));
+  new THREE.PlaneGeometry(2 * SKY_R, 2 * SKY_R),
+  new THREE.MeshStandardMaterial({ color: 0xbcbfc2, map: radialFalloff(512, 0.03, 0.72), roughness: 0.9, metalness: 0,
+    envMapIntensity: DESK_ENV }));
 deskBase.receiveShadow = true;
 scene.add(deskBase);
-scene.background = new THREE.Color(0x9a9ea3);
+scene.fog = new THREE.Fog(0x9a9ea3, 0.35, 2.2);
+paintSky(new THREE.Color(0x9a9ea3));
 
 /** A soft-edged alpha so the photo fades into the plain desk around it. */
 function featherAlpha(w, h, feather = 0.12) {
@@ -138,11 +187,19 @@ async function loadDesk(name) {
   // the plain desk beyond the photo takes the photo's BORDER colour, so
   // the seam between them is a colour match rather than a visible edge
   const deskRgb = d?.edge_rgb ?? d?.desk_rgb ?? [188, 191, 194];
-  deskBase.material.color.setRGB(deskRgb[0] / 255, deskRgb[1] / 255, deskRgb[2] / 255);
+  // the JSON's colours are sRGB bytes, as sampled from the photograph; read
+  // as linear they made the plain desk brighter than the photo laid on it
+  deskBase.material.color.setRGB(deskRgb[0] / 255, deskRgb[1] / 255, deskRgb[2] / 255, THREE.SRGBColorSpace);
   hemi.groundColor.copy(deskBase.material.color);
   const wallRgb = d?.wall_rgb ?? [150, 154, 160];
-  scene.background.setRGB(
-    (wallRgb[0] + 2 * deskRgb[0]) / 765, (wallRgb[1] + 2 * deskRgb[1]) / 765, (wallRgb[2] + 2 * deskRgb[2]) / 765);
+  // the horizon is the desk as the lights leave it (a little brighter than
+  // its sampled colour), so the desk runs into it without a line; the dome
+  // above darkens from there, which is where the depth comes from
+  const horizon = new THREE.Color().setRGB(
+    Math.min(1, 1.1 * deskRgb[0] / 255), Math.min(1, 1.1 * deskRgb[1] / 255),
+    Math.min(1, 1.1 * deskRgb[2] / 255), THREE.SRGBColorSpace);
+  scene.fog.color.copy(horizon);
+  paintSky(horizon);
   deskInfo = d;
   if (!d || !(d.rect_m || d.m_per_px)) return;
   deskGroup = new THREE.Group();
@@ -169,14 +226,15 @@ async function loadDesk(name) {
   }
   const photo = new THREE.Mesh(
     new THREE.PlaneGeometry(w, h),
-    new THREE.MeshStandardMaterial({ map: tex, alphaMap, transparent: true, roughness: 0.9, metalness: 0 }));
+    new THREE.MeshStandardMaterial({ map: tex, alphaMap, transparent: true, roughness: 0.9, metalness: 0,
+      envMapIntensity: DESK_ENV }));
   photo.position.set(cx, cy, 0.00005);
   photo.receiveShadow = true;
   deskGroup.add(photo);
   // No wall. The photographs' desks end 11 to 16 cm behind the pile, and a
   // vertical plane stood there was a dark slab across half of every
-  // elevated view. The desk continues instead, and the background takes a
-  // light neutral between the desk and what lay beyond it in the photo.
+  // elevated view. The desk continues instead, fading under the fog into
+  // the sky dome's horizon.
   deskGroup.visible = displayState.desk;
   scene.add(deskGroup);
 }
