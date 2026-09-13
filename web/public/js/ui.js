@@ -120,6 +120,14 @@ export function initUI(app) {
   };
   let activeTab = "Play";
 
+  // Adding a pencil is Rapier only: the learned engine's graph is fixed at
+  // load, so under it the controls are left out rather than shown dead.
+  const canSpawn = app.engine === "rapier";
+  const drop = () => {
+    if (!canSpawn) { toast("adding pencils needs the Rapier engine (engine badge, top right)"); return; }
+    const i = app.spawn(); if (i != null) toast(`pencil ${i} dropped`);
+  };
+
   // ---- Play
   {
     const p = addTab("Play");
@@ -131,7 +139,7 @@ export function initUI(app) {
         el("div", { class: "hint" }, "Slow motion is real physics at a smaller step rate, not a replay."),
         el("div", { class: "btns" },
           btn("Reset scene", () => app.reset()),
-          btn("Drop a pencil", () => { const i = app.spawn(); toast(`pencil ${i} dropped`); }, "primary"),
+          canSpawn ? btn("Drop a pencil", drop, "primary") : null,
           btn("Lift one", () => { const b = app.selected ?? 0; app.probe("lift", b, { height: 0.05 }); toast(`lifting pencil ${b}`); }),
           btn("Pull bottom", () => { app.probe("pullBottom"); toast("pulling the load-bearing pencil"); }))),
       group("Interaction",
@@ -255,9 +263,9 @@ export function initUI(app) {
     const playBtn = el("button", { class: "big", title: "pause / play (Space)", html: ICON.pause, onclick: () => (app.paused ? app.play() : app.pause()) });
     const stepBtn = el("button", { class: "iconbtn", title: "step one frame (.)", html: ICON.step, onclick: () => app.step() });
     const resetBtn = el("button", { class: "iconbtn", title: "reset scene", html: ICON.reset, onclick: () => app.reset() });
-    const spawnBtn = el("button", { class: "iconbtn", title: "drop a pencil (N)", html: ICON.plus, onclick: () => { const i = app.spawn(); toast(`pencil ${i} dropped`); } });
+    const spawnBtn = el("button", { class: "iconbtn", title: "drop a pencil (N)", html: ICON.plus, onclick: drop });
     const stats = el("span", { id: "stats" }, "loading…");
-    bar.append(resetBtn, playBtn, stepBtn, spawnBtn, stats);
+    bar.append(resetBtn, playBtn, stepBtn, ...(canSpawn ? [spawnBtn] : []), stats);
     app.onPause((paused) => { playBtn.innerHTML = paused ? ICON.play : ICON.pause; });
     setInterval(() => {
       const s = app.stats;
@@ -338,7 +346,7 @@ export function initUI(app) {
     else if (e.key === ".") app.step();
     else if (e.key === "h" || e.key === "H") root.classList.toggle("hidden");
     else if (e.key === "?") $("help").hidden = !$("help").hidden;
-    else if (e.key === "n" || e.key === "N") { const i = app.spawn(); toast(`pencil ${i} dropped`); }
+    else if (e.key === "n" || e.key === "N") drop();
     else if (e.key === "Escape") { $("help").hidden = true; app.select(null); }
   });
 
