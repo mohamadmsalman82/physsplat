@@ -191,8 +191,20 @@ if (!carried.length) {
   await drag(sim, bottom, [0, 0, 0], [axis[0] * 0.13, axis[1] * 0.13, 0], 70, 20);
   for (let k = 0; k < 150; k++) await sim.step();
   const drops = carried.map((b, i) => (z0[i] - lowest(sim, b)) * 1e3);
-  check(drops.some((d) => d > 1.5),
-    `pulling body ${bottom} out lowers what it carried (${drops.map((d) => d.toFixed(1)).join(", ")} mm)`);
+  // A carried body that did not drop must now be resting on something
+  // else: a real contact (within 3 mm) from below, on a body other than
+  // the one pulled out, or the table. In a tight pile a pencil crossing
+  // the pulled one was often carried by a neighbour as well, and that is
+  // the physics, not a failure to fall.
+  const segsAfter = packet.bodies.map((x, i) => capsuleWorld(sim.state.pos[i], sim.state.quat[i], x.capsule));
+  const restingElsewhere = carried.map((b) => lowest(sim, b) < 3e-3 || packet.bodies.some((_, j) => {
+    if (j === b || j === bottom) return false;
+    const c = capsuleClosest(segsAfter[b], segsAfter[j]);
+    return -c.pen < 3e-3 && c.n[2] > 0.2;
+  }));
+  check(drops.some((d) => d > 1.5) || restingElsewhere.every((x) => x),
+    `pulling body ${bottom} out lowers what it carried, or leaves it on something else ` +
+    `(${drops.map((d, i) => `${d.toFixed(1)} mm${restingElsewhere[i] ? " on another" : ""}`).join(", ")})`);
 }
 
 // ---- 5. nothing interpenetrates for long

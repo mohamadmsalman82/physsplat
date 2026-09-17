@@ -5,7 +5,7 @@
  */
 import {
   actionFeature, buildEdges, capsuleClosest, capsuleWorld, edgeFeatures,
-  externalAccels, lowestSurface, quatFromRotvec, quatMul, quatToMatrix,
+  externalAccels, floorSupport, lowestSurface, lowestSurfacePoint, quatFromRotvec, quatMul, quatToMatrix,
   stepBodies, supportAnalysis, supportPoints,
 } from "./physics.js";
 
@@ -30,7 +30,10 @@ const PINCH_DAMPING = 60;
 // 0.05 rad/s, 3 deg/s, and only if the model pushes the same way every
 // step. The end-grab dangle is unaffected: that torque is analytic, not
 // residual, and 140 times larger.
-const PINCH_ANG_MAX = 3;
+// 1.5 now: with the pile under it lying flat instead of frozen at a tilt,
+// a pencil held still on IMG_8626 was turned by its neighbour's contact at
+// the full 3 deg/s for five seconds, 15 deg. A pinch is stiffer than that.
+const PINCH_ANG_MAX = 1.5;
 // A body the guards keep pushing out while it goes nowhere is in a limit
 // cycle, not in motion: 0.5 s of that and settle may claim it.
 const GUARD_HELD_V = 0.06, GUARD_HELD_W = 1.5, GUARD_HELD_STEPS = 30;
@@ -69,12 +72,42 @@ const GUARD_PASSES = 12;
 // millimetre at a time so it settles rather than snaps.
 // Reach was 8 mm and a body pinned 15 mm up was therefore out of it and
 // stayed up; a bisection over 30 mm costs nothing more.
-const SEAT_V = 0.02, SEAT_W = 0.5, SEAT_TOL = 2e-4, SEAT_MAX = 1e-3, SEAT_REACH = 30e-3;
+const SEAT_TOL = 2e-4, SEAT_MAX = 1e-3, SEAT_REACH = 30e-3;
 // Particles within this of the table count as floor support for the
 // balance test. It was the 6 mm contact radius, which turned a 4 deg tilt
 // into 86 mm of "floor" (6 / sin 4 deg), put the centre of mass inside it,
 // and let settle pin a pencil with 14 mm of air under one end.
-const FLOOR_SUPPORT_TOL = 1.5e-3;
+// It is 3 mm now: a pencil lying on its grip and cap has its barrel a
+// millimetre up, the model's residual rocks it by a few tenths, and at
+// 1.5 mm the support set flickered between the grip alone and the whole
+// length, so the balance test tipped it about the grip every few steps and
+// it never slept (trace_rest.mjs: 30 mm of creep in 10 s on IMG_8504).
+const FLOOR_SUPPORT_TOL = 3e-3;
+// A hinge must be a real contact. Support within FLOOR_SUPPORT_TOL of the
+// table or the contact radius of a neighbour is what the model holds a
+// body on, but a body may only be TIPPED about a point it touches; tipping
+// about one it is sensing across air replaced its velocity with a swing
+// about that point and kept gravity out. Until it touches, it is left to
+// the model and the seating pass brings it down.
+const HINGE_TOL = 1.5e-3;
+const FLOOR_TOUCH_TOL = HINGE_TOL;
+// A pencil touching the table over at least this much of its length is
+// lying on it, and the table, not the model, decides its pitch.
+const FLAT_SPAN = 0.02;
+// Tipping starts when the centre of mass is this far outside the support
+// and stops when it is back within the balance tolerance (supportAnalysis'
+// 2 mm), so "not tipping" and "may sleep" are the same verdict.
+const PIVOT_START = 3e-3, PIVOT_STOP = 2e-3;
+// A body descending faster than this into the model's floor zone is
+// landing, and the model's contact response lands it; slower, and it is
+// hovering, which nothing real does.
+const LANDING_VZ = 0.03;
+// A desk cannot throw a pencil. The floor's impulse on a body touching
+// nothing else may leave it no faster upward than a restitution of 0.2
+// allows (the value the pivot rule's landing uses, measured against the
+// swing bounce). The model's floor response to a fast body a few
+// millimetres up was 14 to 33 m/s^2 and launched pencils 10 cm on end.
+const FLOOR_RESTITUTION = 0.2;
 
 export class PhysSim {
   /**
@@ -178,6 +211,7 @@ export class PhysSim {
         capsule: new Float64Array(B),      // metres pushed out of other bodies
         pairs: [],                         // {i, j, pen} overlaps corrected
         settled: new Uint8Array(B),        // 1 if settle held the body still
+        settleVia: new Uint8Array(B),      // 1 rest, 2 guard-held limit cycle
         freeFlight: new Uint8Array(B),     // 1 if the model residual was zeroed
         pivot: new Uint8Array(B),          // 1 if the pivot rule drove the body
         energyScale: 1,                    // <1 if the residual was scaled for energy
@@ -276,42 +310,123 @@ export class PhysSim {
    * residual is dropped, and the centre of mass moves with omega x r so
    * the hinge stays put. A body whose centre of mass is over its support
    * is left to the model, and so is anything the cursor holds.
+   *
+   * The hinge has to be real. Floor support was every particle within the
+   * 6 mm contact radius of the table, so a pencil 4 mm up and touching
+   * nothing had a support polygon, tipped about a point in mid-air, and
+   * because the pendulum integration replaces the centre of mass velocity
+   * with omega x r, gravity never got a vote: it skated above the desk on
+   * a phantom hinge (float.mjs measured dozens of half-second episodes at
+   * 3 to 5 mm, spinning at up to 8 rad/s). The swing then handed the model
+   * a fast body millimetres above the floor, and the model, which has only
+   * ever seen that as an impact, answered with 14 to 33 m/s^2 upward and
+   * threw pencils 5 to 10 cm into the air on end. Floor support is now
+   * FLOOR_SUPPORT_TOL, the same test settle uses (commit 7be654a changed
+   * settle's copies and missed this one, which is the one settle's verdict
+   * actually comes from).
+   *
+   * And support has to reach the table. A body counts as supported if a
+   * neighbour is under it, but nothing asked whether that neighbour was
+   * itself held up: a tangle lifted clear of the desk and let go could be
+   * carried by the model indefinitely, each pencil resting on the next.
+   * Support is now followed transitively to the table or to the held body;
+   * a body whose chain reaches neither is in free flight, and so is
+   * everything resting on it.
    */
   #pivotRule(parts, ext, actBody) {
-    const bs = this.packet.bodies, rt = this.rt, g = rt.gravity;
+    const bs = this.packet.bodies, rt = this.rt, g = rt.gravity, rc = rt.contact_radius;
     const segs = bs.map((b, i) => capsuleWorld(this.state.pos[i], this.state.quat[i], b.capsule));
     const out = [];
-    let k = 0;
     // support verdicts for this step, computed once on the state the
     // diagnostics recorded last step, and shared with settle so the two
     // can never disagree about whether a body may be held still
     this.balancedNow ??= new Uint8Array(this.B);
-    this.balancedNow.fill(0);
     this.pivoting ??= new Uint8Array(this.B);
+    // pass 1: what holds each body up (balancedNow still holds last
+    // step's verdict here, for the floor hysteresis)
+    const sp = [], an = [], starts = new Int32Array(this.B);
+    const floorNear = new Uint8Array(this.B);     // a particle inside the model's floor zone
+    let k = 0;
     for (let b = 0; b < this.B; b++) {
       const n = this.counts[b], start = k; k += n;
-      if (this.last.guard.freeFlight[b]) continue;
-      const rc = rt.contact_radius;
-      const sp = supportPoints(parts, start, n, segs, b, rc, rc);
-      const an = supportAnalysis(this.state.pos[b], sp.points);
-      this.balancedNow[b] = an.n && an.balanced ? 1 : 0;
+      starts[b] = start;
+      for (let i = start; i < start + n; i++) if (parts[3 * i + 2] < rc) { floorNear[b] = 1; break; }
+      // Hysteresis on the floor: a body must come within FLOOR_TOUCH_TOL
+      // of the table to count it as support, and once it does, the
+      // support holds until it rises past FLOOR_SUPPORT_TOL. A pencil
+      // freshly laid across a neighbour with its far end 2 mm up is not
+      // balanced, and tips until that end touches; a pencil lying flat
+      // whose barrel the model rocks by a millimetre is, and stays so.
+      const touchTol = this.balancedNow[b] ? FLOOR_SUPPORT_TOL : FLOOR_TOUCH_TOL;
+      sp[b] = supportPoints(parts, start, n, segs, b, touchTol, rc);
+      // Balance is judged on REAL contacts only: support points within
+      // touchTol of touching. The model senses a neighbour across 6 mm
+      // and holds a body on it, but a body resting on one pencil with its
+      // centre over a second pencil 5.5 mm below it is not balanced, it is
+      // about to tip onto that pencil, and counting the air as support
+      // froze it there (trace_pull.mjs, IMG_8504: the carried pencil slept
+      // 13.5 mm up after its support was pulled away).
+      // And on balance: a body becomes balanced within the 2 mm contact
+      // patch and stays so until its centre is PIVOT_START outside the
+      // support. A pencil with one end on the desk and its barrel on a
+      // neighbour sat with its centre 0 to 3 mm off a two-point support as
+      // the model rocked it, was balanced every other step, never slept,
+      // and crept 11 mm in ten seconds (trace_rest.mjs, IMG_8596 body 3).
+      // A real contact also has to bear load: its normal at least 30 deg
+      // above the table. A pencil leaning on a neighbour's SIDE (normal
+      // nearly horizontal) is supported as far as the model is concerned,
+      // but it is not something to tip about: pinned to that hinge, it
+      // hung 6 mm above the desk (float.mjs, IMG_8596) where it should
+      // have slid down. And a body with air straight beneath it is not
+      // resting on a hinge either, whatever touches its side.
+      const air = (this.seatGap?.[b] ?? 0) > FLOOR_SUPPORT_TOL;
+      const real = air ? [] : sp[b].points.filter((_, i) => sp[b].gaps[i] <= touchTol && sp[b].normals[i][2] >= 0.5);
+      an[b] = supportAnalysis(this.state.pos[b], real, this.balancedNow[b] ? PIVOT_START : 2e-3);
+      an[b].supported = sp[b].points.length > 0;
+    }
+    // pass 2: does the support reach the table? The table's zone is the
+    // model's (rc): a bottom pencil hovering at its equilibrium 3 mm above
+    // the desk is held by the model and lowered by the seating pass, and
+    // declaring the whole pile on it airborne would drop the pile onto it.
+    const grounded = new Uint8Array(this.B);
+    for (let b = 0; b < this.B; b++) if (floorNear[b] || b === actBody) grounded[b] = 1;
+    for (let it = 0; it < this.B; it++)
+      for (let b = 0; b < this.B; b++)
+        if (!grounded[b] && sp[b].capsule.some((j) => grounded[j])) grounded[b] = 1;
+    this.groundedNow = grounded;
+    const drop = (b) => {
+      for (let q = 0; q < 6; q++) this.last.residual[6 * b + q] = 0;
+      this.last.guard.freeFlight[b] = 1;
+      this.pivoting[b] = 0;
+    };
+    for (let b = 0; b < this.B; b++) {
+      const a = an[b];
+      this.balancedNow[b] = a.n && a.balanced ? 1 : 0;
+      if (this.last.guard.freeFlight[b]) { this.balancedNow[b] = 0; continue; }
       if (b === actBody) continue;
-      if (!an.n) {
+      if (!grounded[b]) { drop(b); continue; }
+      if (!a.supported) {
         // touching things, but nothing from below (only pencils on its
-        // back, or a neighbour beside it): it falls like a free body, and
-        // whatever rests on it comes down with it
-        for (let q = 0; q < 6; q++) this.last.residual[6 * b + q] = 0;
-        this.last.guard.freeFlight[b] = 1;
-        this.pivoting[b] = 0;
+        // back, a neighbour beside it, or the table a few millimetres
+        // down): it falls like a free body, and whatever rests on it comes
+        // down with it. One exception: a body still descending into the
+        // model's floor zone is landing, and the model's contact response
+        // is what lands it; leave that to the model.
+        if (floorNear[b] && this.state.linvel[b][2] < -LANDING_VZ) continue;
+        drop(b);
         continue;
       }
       // hysteresis: start tipping only when clearly off the support, keep
-      // tipping until clearly over it. Flip-flopping at the boundary (pivot
-      // one step, model the next) crept bodies at ~1 mm/s.
-      const off = an.dist > (this.pivoting[b] ? 4e-3 : 7e-3);
+      // tipping until over it (PIVOT_STOP is the balance tolerance, so a
+      // body stops tipping exactly when settle may claim it; with a band
+      // between the two a pencil sat with its centre 2 to 7 mm off its
+      // support, unbalanced yet not tipping, held there by the model).
+      // supported across air only (no real contact yet): the model holds
+      // it and the seating pass brings it down; nothing to tip about
+      const off = a.n > 0 && a.dist > (this.pivoting[b] ? PIVOT_STOP : PIVOT_START);
       this.pivoting[b] = off ? 1 : 0;
       if (!off) continue;
-      const P = an.hinge;
+      const P = a.hinge;
       const c = this.state.pos[b], m = this.mass[b];
       const r = [c[0] - P[0], c[1] - P[1], c[2] - P[2]];
       // torque of gravity about P: r x (0, 0, -m g)
@@ -335,7 +450,7 @@ export class PhysSim {
       const wu = w[0] * u[0] + w[1] * u[1] + w[2] * u[2];
       for (let q = 0; q < 3; q++) w[q] = wu * u[q];
       this.last.guard.pivot[b] = 1;
-      out.push({ b, P, start, n });
+      out.push({ b, P, start: starts[b], n: this.counts[b] });
     }
     return out;
   }
@@ -360,6 +475,44 @@ export class PhysSim {
         if (j !== b) gap = Math.min(gap, -capsuleClosest(segs[b], segs[j]).pen);
       const fade = Math.max(0, Math.min(1, 1 - gap / rc));
       if (fade < 1) for (let q = 3; q < 6; q++) res[6 * b + q] *= fade;
+    }
+  }
+
+  /**
+   * A flat table cannot pitch a pencil lying on it. The model's angular
+   * residual on a lone pencil on the desk was 18 rad/s^2 about the pitch
+   * axis, step after step: the far end rose 0.4 mm a step until the
+   * balance test tipped the pencil back down about its grip, and the two
+   * of them rocked it forever, never fifteen quiet steps in a row for
+   * settle (trace_rest.mjs, IMG_8504 body 0, an 8-step cycle). For a body
+   * whose only contact is the table, not landing, the pitch component of
+   * the angular residual is removed. Roll (about the pencil's own axis,
+   * which is how rolling friction arrives) and yaw (spin on the desk) are
+   * the model's; tipping an end DOWN is the pivot rule's, analytically.
+   */
+  #floorTorque(actBody) {
+    const bs = this.packet.bodies, res = this.last.residual;
+    if (!bs.length || !bs[0].capsule) return;
+    const segs = bs.map((b, i) => capsuleWorld(this.state.pos[i], this.state.quat[i], b.capsule));
+    for (let b = 0; b < this.B; b++) {
+      if (b === actBody || this.state.linvel[b][2] < -LANDING_VZ) continue;
+      const a = segs[b].a;
+      if (Math.abs(a[2]) > 0.7071) continue;                       // standing: not this rule's
+      // lying ALONG the table: real floor contact over a stretch of the
+      // pencil, not one end touching down. A straight rigid body on a flat
+      // desk is carried along that stretch, and no load a neighbour can
+      // put on it pitches it; a pencil with one end on the desk and the
+      // other on a neighbour is a lever, and the model may pitch that.
+      const fs = floorSupport(segs[b], FLOOR_TOUCH_TOL);
+      let span = 0;
+      for (let i = 0; i < fs.length; i++) for (let j = i + 1; j < fs.length; j++)
+        span = Math.max(span, Math.hypot(fs[i][0] - fs[j][0], fs[i][1] - fs[j][1]));
+      if (span < FLAT_SPAN) continue;
+      const en = Math.hypot(a[0], a[1]);
+      const e = [-a[1] / en, a[0] / en, 0];                        // pitch axis: horizontal, across the pencil
+      const k = res[6 * b + 3] * e[0] + res[6 * b + 4] * e[1];
+      res[6 * b + 3] -= k * e[0]; res[6 * b + 4] -= k * e[1];
+      if (this.last) this.last.guard.floorTorque = (this.last.guard.floorTorque ?? 0) + Math.abs(k);
     }
   }
 
@@ -423,6 +576,32 @@ export class PhysSim {
     return this.state.pos[b][2] < 2.5 * r;
   }
 
+  /**
+   * Remove the spin that is driving body b's lowest surface point into
+   * the table: the horizontal component of its angular velocity about the
+   * axis that lowers that point most directly. A point contact stops the
+   * point. Used by the ground guard and by the swept table check, which
+   * otherwise left a tumbling pencil hanging with its end grazing the desk:
+   * every step the sweep rewound it to the graze and zeroed its vertical
+   * speed, the spin carried on, and gravity never won (float.mjs: 4 mm up,
+   * free flight, 30 steps).
+   */
+  #stopSpinIntoFloor(b) {
+    const cap = this.packet.bodies[b].capsule;
+    if (!cap || !this.#lying(b)) return;
+    const P = lowestSurfacePoint(this.state.pos[b], this.state.quat[b], cap).point;
+    const c = this.state.pos[b], w = this.state.angvel[b];
+    const r = [P[0] - c[0], P[1] - c[1], P[2] - c[2]];
+    const vpz = w[0] * r[1] - w[1] * r[0];              // (w x r)_z
+    if (vpz >= -1e-6) return;
+    const en = Math.hypot(r[0], r[1]);
+    if (en <= 1e-6) return;
+    const e = [-r[1] / en, r[0] / en, 0];               // z x r, normalised
+    const k = w[0] * e[0] + w[1] * e[1];
+    w[0] -= k * e[0]; w[1] -= k * e[1];
+    if (this.last) this.last.guard.groundSpin = (this.last.guard.groundSpin ?? 0) + Math.abs(k);
+  }
+
   #groundGuard() {
     for (let b = 0; b < this.B; b++) {
       const minz = this.#lowest(b);
@@ -435,6 +614,13 @@ export class PhysSim {
         this.state.pos[b][2] += lift;
         if (this.last) this.last.guard.ground[b] += lift;
         if (this.state.linvel[b][2] < 0 && this.#lying(b)) this.state.linvel[b][2] = 0;
+        // and stop the ROTATION that is driving the contact point into the
+        // table. Lifting the body out is a translation, so a pencil whose
+        // far end swung down onto the desk kept turning: the desk pushed
+        // the whole pencil up each step while the spin carried on, and the
+        // grip end rose off the table instead (trace_rest.mjs: an 8-step
+        // rock, never at rest). A point contact stops the point.
+        this.#stopSpinIntoFloor(b);
         // the rest of the way out through velocity, so the body rises
         // over a few steps instead of jumping
         this.state.linvel[b][2] +=
@@ -554,6 +740,7 @@ export class PhysSim {
         if (j < 0) {                                   // the table: immovable
           const vi = this.state.linvel[i];
           if (vi[2] < 0) vi[2] = 0;
+          this.#stopSpinIntoFloor(i);
           continue;
         }
         const vi = this.state.linvel[i], vj = this.state.linvel[j];
@@ -615,9 +802,14 @@ export class PhysSim {
     if (!bs.length || !bs[0].capsule) return;
     for (let b = 0; b < this.B; b++) {
       if (b === actBody) continue;                       // never fight the grab
-      const v = this.state.linvel[b], w = this.state.angvel[b];
-      if (Math.hypot(v[0], v[1], v[2]) > SEAT_V) continue;
-      if (Math.hypot(w[0], w[1], w[2]) > SEAT_W) continue;
+      // Every unheld body, whatever its speed. It was "slow in every
+      // direction", which left a pencil sliding after a flick riding the
+      // model's 3 to 5 mm floor equilibrium the whole way, then a pencil
+      // skating at 0.8 m/s over a neighbour 4 mm below it, and left the
+      // gap unmeasured for a body jittering at 2 to 6 cm/s, so settle,
+      // reading an unmeasured gap as zero, could pin it in the air. A
+      // millimetre a step downward is a nudge that can add no energy; a
+      // body in real free fall (nothing within SEAT_REACH) is left alone.
       const gap = this.#dropGap(b);
       this.seatGap[b] = gap;                               // settle reads this
       if (gap <= SEAT_TOL || gap >= SEAT_REACH) continue;  // seated, or in flight
@@ -806,10 +998,10 @@ export class PhysSim {
       // is under it is at rest; seating closes the last fraction next step.
       const grounded = (this.seatGap?.[b] ?? 0) <= 1.5 * SEAT_MAX;
       const touching = Math.min(gap[b], lowestOf[b]) < SLEEP_GAP && grounded;
-      const slow = grounded && ((b !== actBody && supported[b] && touching && !standing &&
-        !this.pivoting?.[b] &&
-        Math.hypot(...v) < 0.03 && Math.hypot(...w) < 0.6) ||
-        this.guardHeld[b] >= GUARD_HELD_STEPS);
+      const viaRest = b !== actBody && supported[b] && touching && !standing &&
+        !this.pivoting?.[b] && Math.hypot(...v) < 0.03 && Math.hypot(...w) < 0.6;
+      const slow = grounded && (viaRest || this.guardHeld[b] >= GUARD_HELD_STEPS);
+      if (this.last) this.last.guard.settleVia[b] = slow ? (viaRest ? 1 : 2) : 0;
       this.restCount[b] = slow ? this.restCount[b] + 1 : 0;
       // every settled step, not only the first: a body that settles during
       // the load pre-roll and only later ends up with a gap under it would
@@ -837,9 +1029,13 @@ export class PhysSim {
             const cc = capsuleClosest(segs[b], segs[sp.capsule[q]]);
             if (-cc.pen > g) { g = -cc.pen; Q = cc.ca; }
           }
-          const r = [Q[0] - P[0], Q[1] - P[1], Q[2] - P[2]];
+          // Q is null when every supporting neighbour overlaps this body
+          // (the gap that qualified the branch belongs to a pair that is not
+          // support); nothing to rotate toward, and reading it threw from
+          // inside step() and aborted the step half done
+          const r = Q ? [Q[0] - P[0], Q[1] - P[1], Q[2] - P[2]] : [0, 0, 0];
           const d = Math.hypot(...r);
-          if (d > 0.02 && g > 3e-4) {
+          if (Q && d > 0.02 && g > 3e-4) {
             const theta = g / d;
             // axis: horizontal, perpendicular to r, oriented so Q moves down
             let u = [r[1], -r[0], 0];
@@ -895,6 +1091,36 @@ export class PhysSim {
       const sv = Math.hypot(...v), sw = Math.hypot(...w);
       if (sv > 3) for (let q = 0; q < 3; q++) v[q] *= 3 / sv;
       if (sw > 60) for (let q = 0; q < 3; q++) w[q] *= 60 / sw;
+    }
+  }
+
+  /**
+   * The desk cannot throw a pencil. For a body whose only contact is the
+   * table (a particle inside the model's floor zone, no neighbour within
+   * the contact radius), the step may leave it no faster upward than free
+   * fall would have, or than a bounce at FLOOR_RESTITUTION off the speed it
+   * arrived with. Everything above that is the model, or a guard's
+   * separation velocity, putting energy in. A held body is the hand's, and
+   * a tipping body's centre rides its hinge.
+   */
+  #floorRestitution(prePos, preQuat, actBody) {
+    const bs = this.packet.bodies, rc = this.rt.contact_radius, dt = this.rt.dt;
+    if (!bs.length || !bs[0].capsule) return;
+    const segs = bs.map((b, i) => capsuleWorld(this.state.pos[i], this.state.quat[i], b.capsule));
+    for (let b = 0; b < this.B; b++) {
+      if (b === actBody || this.pivoting?.[b] || this.last.guard.pivot[b]) continue;
+      if (lowestSurface(this.state.pos[b], this.state.quat[b], bs[b].capsule) >= rc) continue;
+      let alone = true;
+      for (let j = 0; j < this.B && alone; j++)
+        if (j !== b && -capsuleClosest(segs[b], segs[j]).pen < rc) alone = false;
+      if (!alone) continue;
+      const vz0 = this.linHist[this.linHist.length - 1][b][2];   // entering the step
+      const cap = Math.max(vz0 - this.rt.gravity * dt, -FLOOR_RESTITUTION * vz0);
+      const v = this.state.linvel[b];
+      if (v[2] > cap) {
+        if (this.last) this.last.guard.floorCap = (this.last.guard.floorCap ?? 0) + (v[2] - cap);
+        v[2] = cap;
+      }
     }
   }
 
@@ -1064,7 +1290,7 @@ export class PhysSim {
     // inputs describe a state that no longer exists, so drop it
     if (gen !== this.gen || !this.last) return this.state;
 
-    const residual = this.last.residual;
+    const residual = this.last.residual, bs0 = this.packet.bodies;
     for (let b = 0; b < this.B; b++)
       for (let k = 0; k < 6; k++)
         residual[6 * b + k] =
@@ -1096,6 +1322,26 @@ export class PhysSim {
         residual[6 * actBody + 3 + q] = Math.max(-PINCH_ANG_MAX, Math.min(PINCH_ANG_MAX, a));
       }
       this.pinchPrev = { body: actBody, raw };
+      // And the linear residual on a held body may only push it AWAY from
+      // what it touches. Held still on a neighbour, the model answered
+      // -2.2 m/s^2 (down, into the neighbour) step after step; the guard
+      // pushed the pair apart by a millimetre a step, the spring pulled
+      // back, and the pencil shook in the hand and turned 15 deg
+      // (trace_pull.mjs hold, IMG_8626). A contact cannot pull.
+      if (this.groundGuard && bs0.length && bs0[0].capsule) {
+        const rc = rt.contact_radius;
+        const segs = bs0.map((x, i) => capsuleWorld(this.state.pos[i], this.state.quat[i], x.capsule));
+        for (let j = 0; j < this.B; j++) {
+          if (j === actBody) continue;
+          const c = capsuleClosest(segs[actBody], segs[j]);         // n: j -> held
+          if (-c.pen >= rc) continue;
+          const into = residual[6 * actBody] * c.n[0] + residual[6 * actBody + 1] * c.n[1] + residual[6 * actBody + 2] * c.n[2];
+          if (into < 0) for (let q = 0; q < 3; q++) residual[6 * actBody + q] -= into * c.n[q];
+        }
+        if (residual[6 * actBody + 2] < 0 &&
+            lowestSurface(this.state.pos[actBody], this.state.quat[actBody], bs0[actBody].capsule) < rc)
+          residual[6 * actBody + 2] = 0;
+      }
     } else this.pinchPrev = null;
     this.last.ext = ext;
     // Two-tap mean of the residual: cancels the step-alternating ringing
@@ -1113,7 +1359,7 @@ export class PhysSim {
       } else this.prevResidual = Float64Array.from(residual);
     }
 
-    if (this.groundGuard) this.#fadeAngular(parts);
+    if (this.groundGuard) { this.#fadeAngular(parts); this.#floorTorque(actBody); }
 
     let pivots = null;
     if (this.groundGuard) {
@@ -1155,7 +1401,7 @@ export class PhysSim {
       const segsNow = bs.map((bb, i) => capsuleWorld(this.state.pos[i], this.state.quat[i], bb.capsule));
       const spNow = supportPoints(partsNow, start, n, segsNow, b, FLOOR_SUPPORT_TOL, rt.contact_radius);
       const anNow = supportAnalysis(this.state.pos[b], spNow.points);
-      if (anNow.n && anNow.dist < 4e-3) {
+      if (anNow.n && anNow.dist < PIVOT_START) {
         for (let q = 0; q < 3; q++) { this.state.linvel[b][q] *= 0.2; this.state.angvel[b][q] *= 0.2; }
         this.pivoting[b] = 0;
       }
@@ -1199,6 +1445,7 @@ export class PhysSim {
         const sp = Math.hypot(v[0], v[1], v[2]);
         if (sp > HELD_SPEED_MAX) for (let q = 0; q < 3; q++) v[q] *= HELD_SPEED_MAX / sp;
       }
+      this.#floorRestitution(prePos, preQuat, actBody);
     }
     this.linHist.shift(); this.linHist.push(this.state.linvel.map((v) => [...v]));
     this.angHist.shift(); this.angHist.push(this.state.angvel.map((v) => [...v]));

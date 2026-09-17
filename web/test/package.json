@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node parity.mjs && node e2e.mjs && node diag.mjs && node rest.mjs"
+    "test": "node parity.mjs && node e2e.mjs && node diag.mjs && node rest.mjs && node ring.mjs && node hover.mjs && node float.mjs"
   },
   "keywords": [],
   "author": "",

@@ -223,6 +223,21 @@ const radiusOn = (C, s) => (C.taper ? radiusAtOffset(s, C.h) : C.r);
  * the minimum of that over the length. Sampling s finely is exact enough,
  * since the profile is piecewise linear and this is a 1D minimum.
  */
+/** The lowest point of the surface itself, {z, point}, for a guard that
+ * needs to know WHERE a body meets the table, not only how deep. */
+export function lowestSurfacePoint(pos, quat, cap) {
+  const C = capsuleWorld(pos, quat, cap);
+  const drop = Math.sqrt(Math.max(0, 1 - C.a[2] * C.a[2]));
+  const d = drop > 1e-6 ? [-C.a[0] * C.a[2] / drop, -C.a[1] * C.a[2] / drop, -drop] : [0, 0, 0];
+  let lo = Infinity, best = null;
+  const knots = C.taper ? PROFILE.map(([t, r]) => [(t - 0.5) * 2 * C.h, r]) : [[-C.h, C.r], [C.h, C.r]];
+  for (const [s, r] of knots) {
+    const z = pos[2] + s * C.a[2] + r * d[2];
+    if (z < lo) { lo = z; best = [pos[0] + s * C.a[0] + r * d[0], pos[1] + s * C.a[1] + r * d[1], z]; }
+  }
+  return { z: lo, point: best };
+}
+
 export function lowestSurface(pos, quat, cap) {
   const C = capsuleWorld(pos, quat, cap);
   const drop = Math.sqrt(Math.max(0, 1 - C.a[2] * C.a[2]));
@@ -330,22 +345,66 @@ export function capsuleClosest(A, B) {
 // as the model is concerned. Tighter tests left a band where the model
 // held a body (edges exist) but no analytic rule applied (no support), and
 // a pencil hovered 5.5 mm above its neighbour for half a second.
+/**
+ * Where a body's SURFACE touches the table: the lowest point of each
+ * cross-section along the axis, wherever it is within `tol` of z = 0,
+ * sampled every `spacing` along the length.
+ *
+ * The particles are a 4 mm-spaced sample with about four to a ring, so
+ * the lowest particle of a ring sits up to 1.3 mm above the surface's own
+ * lowest point, and which rings clear a 1.5 mm test changed from step to
+ * step as a lying pencil rolled by a fraction of a degree. The balance
+ * test then saw a support hull that jumped between the grip alone and the
+ * whole length, tipped the pencil about its grip every fourth step, and
+ * walked it 30 mm across the desk in ten seconds (trace_rest.mjs). The
+ * analytic surface has no such noise.
+ */
+export function floorSupport(C, tol, spacing = 2e-3) {
+  const drop = Math.sqrt(Math.max(0, 1 - C.a[2] * C.a[2]));
+  const pts = [];
+  if (drop < 1e-6) {                                     // standing on end
+    const s = C.a[2] > 0 ? -C.h : C.h;
+    const z = C.p[2] + s * C.a[2];
+    if (z < tol) pts.push([C.p[0] + s * C.a[0], C.p[1] + s * C.a[1], z]);
+    return pts;
+  }
+  // unit vector perpendicular to the axis, pointing most steeply down
+  const d = [-C.a[0] * C.a[2] / drop, -C.a[1] * C.a[2] / drop, -drop];
+  const n = Math.max(1, Math.ceil((2 * C.h) / spacing));
+  for (let i = 0; i <= n; i++) {
+    const s = -C.h + (2 * C.h * i) / n;
+    const r = radiusOn(C, s);
+    const z = C.p[2] + s * C.a[2] + r * d[2];
+    if (z < tol) pts.push([C.p[0] + s * C.a[0] + r * d[0], C.p[1] + s * C.a[1] + r * d[1], z]);
+  }
+  return pts;
+}
+
 export function supportPoints(parts, start, count, segs, b, floorTol = 6e-3, gapTol = 6e-3) {
-  const points = [], capsule = [];
+  const points = [], capsule = [], gaps = [], normals = [];
   let floor = 0;
-  for (let i = start; i < start + count; i++)
-    if (parts[3 * i + 2] < floorTol) {
-      points.push([parts[3 * i], parts[3 * i + 1], parts[3 * i + 2]]); floor++;
-    }
+  if (segs[b].taper) {
+    for (const q of floorSupport(segs[b], floorTol)) { points.push(q); gaps.push(Math.max(0, q[2])); normals.push([0, 0, 1]); floor++; }
+  } else {
+    for (let i = start; i < start + count; i++)
+      if (parts[3 * i + 2] < floorTol) {
+        points.push([parts[3 * i], parts[3 * i + 1], parts[3 * i + 2]]);
+        gaps.push(Math.max(0, parts[3 * i + 2])); normals.push([0, 0, 1]); floor++;
+      }
+  }
   for (let j = 0; j < segs.length; j++) {
     if (j === b) continue;
     const c = capsuleClosest(segs[b], segs[j]);
     // a neighbour supports b only from below: its contact normal (j -> b)
     // must point up. A pencil touched only by pencils lying on top of it
     // was counted as supported and hovered with two others on its back.
-    if (-c.pen < gapTol && c.n[2] > 0.2) { points.push(c.ca); capsule.push(j); }
+    if (-c.pen < gapTol && c.n[2] > 0.2) { points.push(c.ca); gaps.push(Math.max(0, -c.pen)); normals.push(c.n); capsule.push(j); }
   }
-  return { points, floor, capsule };
+  // gaps: how far each support point is from actually touching (m), so a
+  // caller can tell a hinge that is a real contact from one the model is
+  // merely sensing across a few millimetres of air; normals: the contact
+  // normal into b at each point (straight up for the table)
+  return { points, floor, capsule, gaps, normals };
 }
 
 /**
@@ -354,9 +413,9 @@ export function supportPoints(parts, start, count, segs, b, floorTol = 6e-3, gap
  * about: an edge of the support polygon, or a lone contact).
  */
 export function distToHull2D(p, pts) {
-  if (!pts.length) return { dist: Infinity, nearest: null };
+  if (!pts.length) return { dist: Infinity, nearest: null, edge: null };
   const P = pts.slice();
-  if (P.length === 1) return { dist: Math.hypot(p[0] - P[0][0], p[1] - P[0][1]), nearest: [...P[0]] };
+  if (P.length === 1) return { dist: Math.hypot(p[0] - P[0][0], p[1] - P[0][1]), nearest: [...P[0]], edge: [P[0], P[0]] };
   // monotone chain hull in xy, keeping the 3D points
   P.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
@@ -372,16 +431,18 @@ export function distToHull2D(p, pts) {
   };
   if (hull.length < 3) {
     const s = segNearest(P[0], P[P.length - 1]);
-    return { dist: s.d, nearest: s.q };
+    return { dist: s.d, nearest: s.q, edge: [P[0], P[P.length - 1]] };
   }
-  let inside = true, best = { d: Infinity, q: null };
+  let inside = true, best = { d: Infinity, q: null }, edge = null;
   for (let i = 0; i < hull.length; i++) {
     const a = hull[i], b = hull[(i + 1) % hull.length];
     if (cross(a, b, p) < 0) inside = false;
     const s = segNearest(a, b);
-    if (s.d < best.d) best = s;
+    if (s.d < best.d) { best = s; edge = [a, b]; }
   }
-  return { dist: inside ? 0 : best.d, nearest: best.q };
+  // edge: the two support points the hinge lies between (the same point
+  // twice for a lone contact), so the caller can look up their gaps
+  return { dist: inside ? 0 : best.d, nearest: best.q, edge };
 }
 
 /**
@@ -396,13 +457,18 @@ export function distToHull2D(p, pts) {
  * there: the thing a player describes as "it doesn't fall flat on the
  * table". A pencil crossing another touches over a patch a couple of
  * millimetres wide, so 2 mm, and anything further off tips. */
-export function supportAnalysis(com, points, tol = 2e-3) {
-  if (!points.length) return { n: 0, balanced: false, dist: Infinity, spread: 0, hinge: null };
+export function supportAnalysis(com, points, tol = 2e-3, gaps = null) {
+  if (!points.length) return { n: 0, balanced: false, dist: Infinity, spread: 0, hinge: null, hingeGap: Infinity };
   let spread = 0;
   for (let i = 0; i < points.length; i++) for (let j = i + 1; j < points.length; j++)
     spread = Math.max(spread, Math.hypot(points[i][0] - points[j][0], points[i][1] - points[j][1]));
-  const { dist, nearest } = distToHull2D(com, points);
-  return { n: points.length, balanced: dist <= tol, dist, spread, hinge: nearest };
+  const { dist, nearest, edge } = distToHull2D(com, points);
+  // hingeGap: the larger gap of the two support points the hinge lies
+  // between, 0 when `gaps` is not given. A pivot about a hinge that is
+  // not touching is a pivot about a point in the air.
+  let hingeGap = 0;
+  if (gaps && edge) for (const q of edge) { const i = points.indexOf(q); if (i >= 0) hingeGap = Math.max(hingeGap, gaps[i]); }
+  return { n: points.length, balanced: dist <= tol, dist, spread, hinge: nearest, hingeGap };
 }
 
 // ------------------------------------------------------------------ grabs

@@ -783,6 +783,103 @@ with an alpha where the photograph reached), the Photo view is the fitted
 camera, and the old uniform-scale placement remains as the fallback for a
 scene without a registration file.
 
+## Player report (2026-09-16): pencils that float
+
+A screenshot with the learned engine: four pencils tangled as a pile, every
+one of them a few centimetres above the desk, shadows detached. "They keep
+glitching and they start to float when they are meant to lay flat on the
+ground." Every earlier round had a hovering complaint of some kind; this
+one was chased with a new harness instead of a probe.
+
+**The harness.** `web/test/float.mjs` plays a scene for thirty random
+gestures (lifts, carries, slides, presses into the desk, drops from 20 cm,
+flicks, holds still) and after every step asks the one question that
+matters: does each unheld pencil rest on a chain of contacts that reaches
+the table? Nothing before it asked that. The rest suite never touches
+anything and the interaction suite checks one gesture at a time, and
+random play with the real WebGPU backend in Chrome (40 gestures, 4,500
+steps, `web/test/browser_float.js`) did not reproduce the screenshot
+either. The headless harness did, sixty times in 3,500 steps on IMG_8504,
+and the episodes shared one signature.
+
+**The cause.** The pivot rule counted every particle within the 6 mm
+contact radius of the table as floor support. Commit `7be654a` had cut
+that tolerance to 1.5 mm in settle's two copies of the test, and the
+ledger said so, but the copy the balance verdict actually comes from is
+the pivot rule's, and it was left at 6 mm. So a pencil 4 mm above the desk
+and touching nothing had a support polygon, was judged off balance, and
+was integrated as a pendulum about a hinge in mid-air; and because that
+integration replaces the centre of mass velocity with omega x r, gravity
+never got a vote. It skated above the desk, spinning at up to 8 rad/s. The
+swing then handed the model a fast body millimetres above the floor,
+which the model has only ever seen as an impact, and it answered with 14
+to 33 m/s^2 upward: pencils thrown 5 to 10 cm into the air on end.
+
+**What changed**, each measured in `sim.js` traces before and after:
+
+- Floor support for balance comes from the analytic surface (the
+  particles are four to a ring and their lowest sits up to 1.3 mm above
+  the surface, so a 1.5 mm test flickered as a lying pencil rolled by a
+  fraction of a degree and walked it 30 mm in ten seconds). A body must
+  come within 1.5 mm to count the table as support and keeps it until 3
+  mm; balance is judged on real contacts only, with the same hysteresis,
+  and a hinge must bear load (normal at least 30 degrees above the table,
+  no air straight beneath the body). Tipping starts 3 mm off the support
+  and stops at the 2 mm balance tolerance, so "not tipping" and "may
+  sleep" are one verdict; between the old 7 mm start and 2 mm tolerance a
+  pencil sat unbalanced yet not tipping, held there by the model.
+- Support is transitive. A body is held up only if the chain of bodies
+  under it reaches the table or the held pencil; a tangle let go in
+  mid-air falls as a tangle (`web/test/ring.mjs` builds one and checks).
+- The table cannot throw a pencil: a body touching only the table may not
+  leave a step moving upward faster than free fall or a 0.2 restitution
+  bounce allows. It cannot pitch one lying along it either (real contact
+  over 20 mm or more): the model's 18 rad/s^2 pitch residual on a lone
+  pencil rocked it forever, never fifteen quiet steps in a row. And a
+  point that meets the table stops: the ground guard and the swept table
+  check remove the spin driving the lowest point down, where lifting the
+  body out had let a pencil that swung an end onto the desk keep turning
+  and raise its other end.
+- Seating applies to every unheld body at any speed; it was gated on
+  being slow in every direction, so a flicked pencil rode the model's
+  3 to 5 mm floor equilibrium the whole way and a jittering one could be
+  slept with its gap unmeasured.
+- A held body's learned linear residual may only push it away from what
+  it touches (held still on a neighbour, the model answered -2.2 m/s^2
+  into it and the guard fought the spring every step), and its angular
+  cap is 1.5 rad/s^2 (a pencil held still on IMG_8626 was turned 15
+  degrees in five seconds at 3).
+
+**Measured after.** Rest: all four scenes 0.0 mm of rise, 0.0 degrees of
+tilt, 0.0 mm of drift, no sinking. Interaction: all four scenes pass in
+full. Rings of three and four pencils built 40 to 50 mm up come down.
+Float sessions of 3,400 to 3,700 steps, six seeds over the four scenes:
+no floating episode, where the first run had sixty on IMG_8504 alone.
+What the harness still reports along the way, and accepts, is a pencil
+held 2 to 3 mm above its support by the model's contact equilibrium for
+under a second before it seats, the band settle closes once the body
+sleeps. The packets were re-settled under the new rules (bodies moved
+0.6 to 6 mm from their previous settled poses, all at rest). The
+deployed site was not touched during any of this; everything ran against
+a local server over the working tree.
+
+**Found by the long sessions.** Sixty-gesture sessions on every scene
+(7,000 steps each) were clean on three, and on IMG_8626 the simulator
+threw from inside settle's gap-closing rotation: it picks the widest gap
+among the neighbours that support a body, and when every one of those
+overlaps the body while some other pair has the gap that qualified the
+branch, there is nothing to rotate toward and it read a null. Headless
+that ends the run; on the page the loop catches the exception and
+continues from a half-finished step, guards and history skipped, which is
+exactly the kind of one-frame glitch a player sees. Guarded now.
+
+**Left open.** The learned model's floor and contact responses are still
+what they were: under-supporting at rest (the ground guard lifts a lying
+pencil a few tenths of a millimetre a step), over-responding to a fast
+body near a surface. The rules above bound what that can do to the
+picture; fine-tuning under the rules (`scripts/improve.py --rules`) is
+what would change the model.
+
 ## Round 9
 
 Pending.
